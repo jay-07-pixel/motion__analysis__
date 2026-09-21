@@ -4,7 +4,7 @@ Student: **Jay**
 Hardware: **Intel RealSense Depth Camera D455f**  
 Current phase: **2D only** (RGB keypoints in camera pixel coordinates)
 
-We build this **one step at a time**. CSV save is not in the code yet.
+We build this **one step at a time**. The one-window GUI is not in the code yet.
 
 ---
 
@@ -80,6 +80,52 @@ Thresholds: `pose.min_visibility` etc. in `config.yaml`.
 
 ---
 
+## Step 4 (done) — Save keypoints to CSV
+
+**What:** Same skeleton as Step 3, plus a file of every joint.
+
+**Why:** The window is only for you. CSV is for handover and for Step 5 (angles).
+
+Each run creates `data/output/<timestamp>/`:
+
+- `keypoints_2d.csv` — `frame, time_sec, joint, u_px, v_px, confidence, coord_frame, source`
+- `overlay.mp4` — video with the stick figure
+- `run.json` — settings used for this run
+
+`coord_frame` is always `camera_2d_pixel` (origin top-left).
+
+**How to run**
+
+```text
+python step4_save_keypoints.py
+```
+
+Close Viewer first if `source.mode` is `live`. Press **q** to stop and finish the files.
+
+Open the CSV in Excel to check `left_elbow` etc. have numbers.
+
+---
+
+## Step 5 (done) — 2D angles and path
+
+**What:** Elbow angles in the **image** (degrees) and a wrist trail in **pixels**.
+
+**Why:** Dots on the body are not analysis. Angles and a path are motion numbers.
+
+**How to run**
+
+```text
+python step5_analyze_2d.py
+```
+
+Face the camera, bend your elbows. You should see `left_elbow 140 deg` on the video. Press **q**.
+
+Saves `angles_2d.csv` plus the same keypoint CSV / overlay as Step 4.
+
+**Limit:** 2D only. If the arm points at the camera, the angle is wrong. Weak joints (legs when sitting close) are skipped when confidence &lt; `analysis.min_confidence`.
+
+---
+
 ## Files
 
 | File | Role |
@@ -94,9 +140,15 @@ Thresholds: `pose.min_visibility` etc. in `config.yaml`.
 | `src/pose/extractor_2d.py` | MediaPipe → 2D keypoints `(u_px, v_px)` |
 | `src/pose/draw.py` | Skeleton overlay |
 | `step3_show_keypoints.py` | Step 3 window |
+| `src/io/save_keypoints.py` | CSV writer |
+| `src/io/save_video.py` | Overlay mp4 writer |
+| `step4_save_keypoints.py` | Step 4 window + save |
+| `src/analysis/angles_2d.py` | 2D angle at three joints |
+| `src/analysis/trajectory_2d.py` | Wrist trail + px/s |
+| `step5_analyze_2d.py` | Step 5 window + angle CSV |
 
 ---
 
 ## Next step (not built yet)
 
-**Step 4:** save keypoints to CSV/JSON (same camera 2D coordinates) plus optional overlay video.
+**Step 6:** one user-friendly GUI (live / upload / overlay / save).

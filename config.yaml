@@ -10,6 +10,8 @@
 # STEP 1 uses: camera, display
 # STEP 2 uses: source, display, camera.fps (fallback if a movie has no FPS)
 # STEP 3 uses: source, pose, overlay, display
+# STEP 4 uses: source, pose, overlay, display, output
+# STEP 5 uses: source, pose, overlay, display, output, analysis
 # =============================================================================
 
 # Human-readable project identity (shown in window title / later reports).
@@ -65,7 +67,36 @@ overlay:
   point_color_bgr: [0, 255, 0]
   line_color_bgr: [0, 200, 255]
 
+# Where Step 4 writes files. Each run gets its own timestamped subfolder.
+output:
+  folder: "data/output"
+  stamp_format: "%Y%m%d-%H%M%S"
+  save_csv: true
+  csv_name: "keypoints_2d.csv"
+  save_overlay_video: true
+  video_name: "overlay.mp4"
+  video_codec: "mp4v"
+  save_run_json: true
+  angles_csv_name: "angles_2d.csv"
+
+# Step 5: 2D angles in the image plane + a joint trail.
+# Face the camera. Joint names must match MediaPipe (see src/pose/skeleton.py).
+analysis:
+  # Skip an angle if any of its three joints is below this.
+  min_confidence: 0.5
+  # Each item: angle at points[1], using points[0] and points[2].
+  angles:
+    - name: left_elbow
+      points: [left_shoulder, left_elbow, left_wrist]
+    - name: right_elbow
+      points: [right_shoulder, right_elbow, right_wrist]
+  trail_joint: left_wrist
+  trail_max_points: 40
+  trail_thickness: 3
+  trail_color_bgr: [255, 80, 80]
+  angle_text_bgr: [0, 255, 255]
+
 # On-screen window. Title can change per step; quit key stays one character.
 display:
-  window_title: "Step 3 - 2D keypoints (camera pixels)"
+  window_title: "Step 5 - 2D angles"
   quit_key: "q"
