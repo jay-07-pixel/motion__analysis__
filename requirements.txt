@@ -1,8 +1,9 @@
 # Python packages for this project.
-# Step 1 needs: RealSense SDK, OpenCV (window + image array), PyYAML (config).
-# Later steps will add MediaPipe for 2D keypoints — not installed yet on purpose.
+# mediapipe 0.10.14 = local Pose (33 joints). Do not use mediapipe 1.x here:
+# it needs a different API and pulled NumPy 2, which broke OpenCV.
 
 pyrealsense2==2.58.4.10922
 opencv-python>=4.8.0
 PyYAML>=6.0
-numpy>=1.23.0
+numpy>=1.23.0,<2.0
+mediapipe==0.10.14

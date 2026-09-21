@@ -9,6 +9,7 @@
 #
 # STEP 1 uses: camera, display
 # STEP 2 uses: source, display, camera.fps (fallback if a movie has no FPS)
+# STEP 3 uses: source, pose, overlay, display
 # =============================================================================
 
 # Human-readable project identity (shown in window title / later reports).
@@ -19,11 +20,11 @@ project:
   # Current build phase. Keep this as 2d until we start depth -> 3D.
   phase: "2d"
 
-# Which pictures to read. Pose (later) will use this same switch.
+# Which pictures to read. Step 3 pose uses this same switch.
 source:
-  # "live" = USB D455f (Step 1)
-  # "file" = uploaded clip (Step 2) — path below
-  mode: "file"
+  # "live" = USB D455f (best for seeing a skeleton on yourself)
+  # "file" = uploaded clip — path below (needs a person in the video)
+  mode: "live"
   # Relative paths start at the project folder. Examples:
   #   data/input/clip.mp4     colour movie (2D only, no depth)
   #   data/input/clip.avi
@@ -46,7 +47,25 @@ camera:
   # not convert RGB->BGR every frame on live USB.
   color_format: "bgr8"
 
+# MediaPipe Pose (Step 3). All thresholds live here — not in Python.
+pose:
+  # 0 = fastest, 1 = default, 2 = slowest / most accurate.
+  model_complexity: 1
+  # First-time person detection (0..1).
+  min_detection_confidence: 0.5
+  # Keep tracking the same person (0..1).
+  min_tracking_confidence: 0.5
+  # Do not draw a joint if MediaPipe visibility is below this.
+  min_visibility: 0.5
+
+# Stick-figure overlay (Step 3). Colours are OpenCV BGR: [Blue, Green, Red].
+overlay:
+  point_radius: 5
+  line_thickness: 2
+  point_color_bgr: [0, 255, 0]
+  line_color_bgr: [0, 200, 255]
+
 # On-screen window. Title can change per step; quit key stays one character.
 display:
-  window_title: "Step 2 - Uploaded RGB"
+  window_title: "Step 3 - 2D keypoints (camera pixels)"
   quit_key: "q"
