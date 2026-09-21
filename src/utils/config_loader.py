@@ -50,3 +50,16 @@ def load_config(config_path: Path | None = None) -> dict:
         raise ValueError(f"Config must be a YAML mapping (got {type(data)})")
 
     return data
+
+
+def resolve_project_path(maybe_relative: str | Path) -> Path:
+    """Turn a config path into an absolute path.
+
+    Relative paths are from the project folder (where config.yaml lives),
+    so 'data/input/clip.mp4' works no matter which folder you run from.
+    Absolute paths (D:/videos/clip.mp4) are left unchanged.
+    """
+    path = Path(maybe_relative)
+    if path.is_absolute():
+        return path
+    return get_project_root() / path

@@ -1,1 +1,5 @@
-# Put uploaded videos here in Step 2.
+# Put uploaded clips here for Step 2:
+#   .mp4 / .avi / .mov  = colour movie (2D only)
+#   .bag                = RealSense Viewer recording (RGB now, depth later)
+# Then set source.file_path in config.yaml, e.g. data/input/sample.mp4
+

@@ -1,18 +1,14 @@
 # =============================================================================
 # Project: 2D and 3D Motion Analysis (single Intel RealSense D455f)
 # File:     config.yaml
-# Phase:    Step 1 — live RGB capture only
 #
 # WHY THIS FILE EXISTS
 # --------------------
-# Sir asked for no hardcoding. Resolution, FPS, window name, and keys must
-# live here — not buried inside Python. Change a value here, run again.
-# You should not need to edit source code for camera settings.
+# Sir asked for no hardcoding. Resolution, FPS, file path, and keys live
+# here — not buried inside Python. Change a value here, run again.
 #
-# WHAT STEP 1 USES
-# ----------------
-# Only the "camera" and "display" sections below. Pose, analysis, and save
-# paths will be added in later steps, still in this same file.
+# STEP 1 uses: camera, display
+# STEP 2 uses: source, display, camera.fps (fallback if a movie has no FPS)
 # =============================================================================
 
 # Human-readable project identity (shown in window title / later reports).
@@ -23,22 +19,34 @@ project:
   # Current build phase. Keep this as 2d until we start depth -> 3D.
   phase: "2d"
 
-# Live RealSense RGB stream. These must match what the D455f actually supports.
+# Which pictures to read. Pose (later) will use this same switch.
+source:
+  # "live" = USB D455f (Step 1)
+  # "file" = uploaded clip (Step 2) — path below
+  mode: "file"
+  # Relative paths start at the project folder. Examples:
+  #   data/input/clip.mp4     colour movie (2D only, no depth)
+  #   data/input/clip.avi
+  #   data/input/session.bag  RealSense recording (RGB now, depth later)
+  file_path: "data/input/sample.mp4"
+  # If true, replay from the start when the file ends.
+  loop: false
+
+# Live RealSense RGB stream. Also used if a movie file does not report FPS.
 # Common working modes: 1280x720 @ 30fps, 640x480 @ 30fps.
-# If start() fails, try width/height 640 and 480 first.
 camera:
   # Colour width and height in pixels. These are camera image coordinates:
   # u goes 0 .. width-1 (left -> right), v goes 0 .. height-1 (top -> bottom).
   width: 1280
   height: 720
-  # Frames per second requested from the colour sensor.
+  # Frames per second requested from the colour sensor (live), and playback
+  # fallback for mp4/avi if the file does not store FPS.
   fps: 30
   # OpenCV uses BGR. RealSense can deliver colour already in bgr8 so we do
-  # not convert RGB->BGR every frame.
+  # not convert RGB->BGR every frame on live USB.
   color_format: "bgr8"
 
-# On-screen window for Step 1 (Viewer-like preview, but our own Python).
+# On-screen window. Title can change per step; quit key stays one character.
 display:
-  window_title: "Step 1 - Live RGB (D455f)"
-  # Keyboard key that stops the loop. Must be a single character.
+  window_title: "Step 2 - Uploaded RGB"
   quit_key: "q"

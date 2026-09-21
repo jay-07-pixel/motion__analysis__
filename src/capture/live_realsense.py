@@ -15,8 +15,10 @@ from __future__ import annotations
 import numpy as np
 import pyrealsense2 as rs
 
+from src.capture.base_source import RGBSource
 
-class LiveRealSenseRGB:
+
+class LiveRealSenseRGB(RGBSource):
     """Owns the RealSense pipeline for the colour (RGB) stream only.
 
     One object = one open camera. Call start(), then get_frame() in a loop,
@@ -40,6 +42,16 @@ class LiveRealSenseRGB:
         # config = which streams to enable (here: colour only).
         self._rs_config = rs.config()
         self._running = False
+
+    @property
+    def ended(self) -> bool:
+        """Live USB never ends by itself (user presses q)."""
+        return False
+
+    @property
+    def label(self) -> str:
+        """HUD tag for the live D455f."""
+        return "live"
 
     def start(self) -> None:
         """Enable the RGB stream and start the camera.
