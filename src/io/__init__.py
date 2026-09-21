@@ -1,1 +1,1 @@
-"""Output writers: CSV keypoints and overlay video (Step 4)."""
+"""Output writers: CSV keypoints, angle CSV, and overlay video."""

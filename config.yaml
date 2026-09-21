@@ -12,6 +12,7 @@
 # STEP 3 uses: source, pose, overlay, display
 # STEP 4 uses: source, pose, overlay, display, output
 # STEP 5 uses: source, pose, overlay, display, output, analysis
+# STEP 6 GUI uses: all of the above (live vs upload is chosen in the window)
 # =============================================================================
 
 # Human-readable project identity (shown in window title / later reports).
@@ -79,7 +80,7 @@ output:
   save_run_json: true
   angles_csv_name: "angles_2d.csv"
 
-# Step 5: 2D angles in the image plane + a joint trail.
+# Step 5/6: 2D angles in the image plane + a joint trail.
 # Face the camera. Joint names must match MediaPipe (see src/pose/skeleton.py).
 analysis:
   # Skip an angle if any of its three joints is below this.
@@ -95,8 +96,13 @@ analysis:
   trail_thickness: 3
   trail_color_bgr: [255, 80, 80]
   angle_text_bgr: [0, 255, 255]
+  # A still wrist still jitters ~1-4 px (MediaPipe). At 30 fps that fake
+  # wiggle looks like speed. Moves smaller than this (pixels) count as 0.
+  speed_deadband_px: 4
+  # Blend new speed with the previous one (1 = jumpy, 0.3 = calmer).
+  speed_smooth: 0.35
 
 # On-screen window. Title can change per step; quit key stays one character.
 display:
-  window_title: "Step 5 - 2D angles"
+  window_title: "2D Motion Analysis"
   quit_key: "q"

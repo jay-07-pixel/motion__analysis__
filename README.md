@@ -4,7 +4,7 @@ Student: **Jay**
 Hardware: **Intel RealSense Depth Camera D455f**  
 Current phase: **2D only** (RGB keypoints in camera pixel coordinates)
 
-We build this **one step at a time**. The one-window GUI is not in the code yet.
+The one-window GUI is **Step 6**. Steps 1–5 stay as practice scripts.
 
 ---
 
@@ -126,6 +126,33 @@ Saves `angles_2d.csv` plus the same keypoint CSV / overlay as Step 4.
 
 ---
 
+## Step 6 (done) — One user-facing app
+
+**What:** One window: **Live** or **Upload**, **Start** / **Stop**, video on the left, live elbow degrees and wrist px/s on the right. Optionally save CSV + overlay video.
+
+**Why:** Sir asked for a user-friendly app (live + uploaded). The engine is still Steps 1–5; the window is the front door. Thresholds stay in `config.yaml`.
+
+**How to run**
+
+1. Close RealSense Viewer (Live cannot share the D455f).
+2. From the project folder:
+
+```text
+python app.py
+```
+
+3. Choose **Live camera** or **Upload file**, then **Start**.
+4. Leave **Save CSV + video** ticked if you want files.
+5. **Stop**. If Save was on, files go under `data/output/<timestamp>/`.
+
+**What is the same as Step 5:** 2D camera pixels (origin top-left), elbow angle in the image (~180° = straight in the picture), one wrist trail, skip low-confidence joints.
+
+**What is not in this app:** metres, depth, 3D. Student prototype — not a medical device.
+
+**If Live fails:** Viewer still open, USB 2 instead of USB 3, or another program using the camera.
+
+---
+
 ## Files
 
 | File | Role |
@@ -146,9 +173,12 @@ Saves `angles_2d.csv` plus the same keypoint CSV / overlay as Step 4.
 | `src/analysis/angles_2d.py` | 2D angle at three joints |
 | `src/analysis/trajectory_2d.py` | Wrist trail + px/s |
 | `step5_analyze_2d.py` | Step 5 window + angle CSV |
+| `src/ui/session.py` | One Start/Stop session (pose + angles + save) |
+| `src/ui/app.py` | Tkinter window |
+| `app.py` | Launch: `python app.py` |
 
 ---
 
 ## Next step (not built yet)
 
-**Step 6:** one user-friendly GUI (live / upload / overlay / save).
+**3D:** use RealSense depth at the 2D pixels (metres in camera coordinates). Do not treat MediaPipe world landmarks as RealSense 3D.

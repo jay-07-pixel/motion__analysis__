@@ -25,7 +25,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.analysis.angles_2d import compute_configured_angles
 from src.analysis.draw_analysis import draw_angles_2d, draw_trail_2d
-from src.analysis.trajectory_2d import JointTrail2D
+from src.analysis.trajectory_2d import trail_from_config
 from src.capture.factory import create_rgb_source
 from src.capture.video_file import VideoFileRGB
 from src.io.save_angles import AngleCsvWriter
@@ -72,10 +72,7 @@ def main() -> None:
         min_detection_confidence=float(pose_cfg["min_detection_confidence"]),
         min_tracking_confidence=float(pose_cfg["min_tracking_confidence"]),
     )
-    trail = JointTrail2D(
-        joint_name=str(analysis_cfg["trail_joint"]),
-        max_points=int(analysis_cfg["trail_max_points"]),
-    )
+    trail = trail_from_config(analysis_cfg)
     point_color = _bgr(overlay_cfg["point_color_bgr"])
     line_color = _bgr(overlay_cfg["line_color_bgr"])
     angle_color = _bgr(analysis_cfg["angle_text_bgr"])
