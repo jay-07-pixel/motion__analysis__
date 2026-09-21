@@ -1,0 +1,8 @@
+# Python packages for this project.
+# Step 1 needs: RealSense SDK, OpenCV (window + image array), PyYAML (config).
+# Later steps will add MediaPipe for 2D keypoints — not installed yet on purpose.
+
+pyrealsense2==2.58.4.10922
+opencv-python>=4.8.0
+PyYAML>=6.0
+numpy>=1.23.0

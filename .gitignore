@@ -1,0 +1,20 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# Editor / OS
+.vscode/
+.idea/
+Thumbs.db
+Desktop.ini
+
+# Local outputs (recordings and later keypoint CSVs)
+data/output/*
+!data/output/.gitkeep
+data/cache/
+
+# Secrets (none used in Step 1; keep the habit)
+.env
