@@ -15,8 +15,8 @@ import cv2
 import numpy as np
 
 from src.analysis.angles_2d import Angle2D, compute_configured_angles
-from src.analysis.draw_analysis import draw_angles_2d, draw_joint_coords_2d, draw_trail_2d
-from src.analysis.regions import region_label
+from src.analysis.draw_analysis import draw_joint_coords_2d, draw_trail_2d
+from src.analysis.regions import region_id, region_label
 from src.analysis.trajectory_2d import trail_from_config
 from src.capture.factory import create_rgb_source
 from src.io.save_angles import AngleCsvWriter
@@ -24,6 +24,7 @@ from src.io.save_keypoints import KeypointCsvWriter
 from src.io.save_video import OverlayVideoWriter
 from src.pose.draw import draw_keypoints_2d
 from src.pose.extractor_2d import PoseExtractor2D
+from src.pose.hands import HandsExtractor2D, merge_pose_and_hands
 from src.utils.config_loader import resolve_project_path
 
 
@@ -46,6 +47,7 @@ class MotionSession2D:
         self.save_files = save_files
         self.source = None
         self.extractor = None
+        self.hands_extractor = None
         self.trail = None
         self.csv_writer = None
         self.angle_writer = None
@@ -60,7 +62,7 @@ class MotionSession2D:
         self.last_highlight_uv: dict[str, tuple[float, float] | None] = {}
 
     def start(self) -> None:
-        """Open RGB source, pose model, and output files."""
+        """Open RGB source, Pose + Hands models, and output files."""
         pose_cfg = self.config["pose"]
         analysis_cfg = self.config["analysis"]
         output_cfg = self.config["output"]
@@ -72,6 +74,20 @@ class MotionSession2D:
             min_detection_confidence=float(pose_cfg["min_detection_confidence"]),
             min_tracking_confidence=float(pose_cfg["min_tracking_confidence"]),
         )
+        self.hands_extractor = None
+        hands_cfg = pose_cfg.get("hands") or {}
+        use_hands = bool(hands_cfg.get("enabled", True)) and region_id(self.config) != "face"
+        if use_hands:
+            self.hands_extractor = HandsExtractor2D(
+                max_num_hands=int(hands_cfg.get("max_num_hands", 2)),
+                model_complexity=int(hands_cfg.get("model_complexity", 1)),
+                min_detection_confidence=float(
+                    hands_cfg.get("min_detection_confidence", pose_cfg["min_detection_confidence"])
+                ),
+                min_tracking_confidence=float(
+                    hands_cfg.get("min_tracking_confidence", pose_cfg["min_tracking_confidence"])
+                ),
+            )
         self.trail = trail_from_config(analysis_cfg) if analysis_cfg.get("trail_joint") else None
         if self.save_files:
             self.run_dir = _make_run_dir(output_cfg)
@@ -111,6 +127,8 @@ class MotionSession2D:
         min_ang = float(analysis_cfg["min_confidence"])
 
         keypoints = self.extractor.extract(frame)
+        if self.hands_extractor is not None:
+            keypoints = merge_pose_and_hands(keypoints, self.hands_extractor.extract(frame))
         time_sec = time.perf_counter() - self._t0
         angles = compute_configured_angles(keypoints, analysis_cfg["angles"], min_ang)
         if self.trail is not None:
@@ -158,7 +176,6 @@ class MotionSession2D:
                 bgr(analysis_cfg["trail_color_bgr"]),
                 int(analysis_cfg["trail_thickness"]),
             )
-        draw_angles_2d(canvas, angles, bgr(analysis_cfg["angle_text_bgr"]))
         self.last_highlight_uv = draw_joint_coords_2d(
             canvas,
             keypoints,
@@ -180,6 +197,12 @@ class MotionSession2D:
             except Exception:
                 pass
             self.extractor = None
+        if self.hands_extractor is not None:
+            try:
+                self.hands_extractor.close()
+            except Exception:
+                pass
+            self.hands_extractor = None
         if self.source is not None:
             try:
                 self.source.stop()

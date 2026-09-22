@@ -1,7 +1,7 @@
 """Pick which body region to draw and analyse (from config.yaml).
 
-MediaPipe Pose still runs on the whole person. We only keep the joints,
-angles, gauges, and highlights listed for the selected region.
+MediaPipe Pose still runs on the whole person. Hands runs too (except Face).
+We only keep the joints, angles, gauges, and highlights listed for the region.
 """
 
 from __future__ import annotations
@@ -53,6 +53,11 @@ def apply_region(config: dict, region: str) -> dict:
     if "trail_joint" in spec:
         analysis["trail_joint"] = spec.get("trail_joint")
 
-    analysis["draw_joints"] = spec.get("joints")
+    joints = spec.get("joints")
+    if spec.get("include_hand_landmarks") and joints:
+        extra = [str(name) for name in (analysis.get("hand_landmarks") or [])]
+        seen = set(joints)
+        joints = list(joints) + [name for name in extra if name not in seen]
+    analysis["draw_joints"] = joints
     analysis["extra_bones"] = list(spec.get("bones") or [])
     return config

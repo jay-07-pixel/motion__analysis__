@@ -9,6 +9,7 @@ from __future__ import annotations
 import cv2
 import numpy as np
 
+from src.pose.hands import HAND_SKELETON_BONES, POSE_SIMPLE_HAND_BONES
 from src.pose.keypoints import Keypoint2D
 from src.pose.skeleton import SKELETON_BONES
 
@@ -42,11 +43,15 @@ def draw_keypoints_2d(
     """
     canvas = frame.copy()
     by_name = {kp.name: kp for kp in keypoints}
-    bones = list(SKELETON_BONES)
+    bones = list(SKELETON_BONES) + list(HAND_SKELETON_BONES)
     if extra_bones:
         bones.extend(extra_bones)
 
     for start_name, end_name in bones:
+        if (start_name, end_name) in POSE_SIMPLE_HAND_BONES and _has_full_finger(
+            by_name, start_name, min_visibility
+        ):
+            continue
         if allowed_names is not None and (
             start_name not in allowed_names or end_name not in allowed_names
         ):
@@ -80,3 +85,10 @@ def draw_keypoints_2d(
             lineType=cv2.LINE_AA,
         )
     return canvas
+
+
+def _has_full_finger(by_name: dict, joint_name: str, min_visibility: float) -> bool:
+    """True if this side has MediaPipe Hands knuckles (not only Pose tips)."""
+    side = "left" if joint_name.startswith("left_") else "right"
+    knuckle = by_name.get(f"{side}_index_mcp")
+    return knuckle is not None and knuckle.confidence >= min_visibility

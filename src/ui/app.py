@@ -77,7 +77,6 @@ class MotionAnalysisApp:
 
         self._build_header(project)
         self._build_controls()
-        self._build_region_bar()
         self._build_body()
         self._build_status()
         self._refresh_mode_buttons()
@@ -119,7 +118,7 @@ class MotionAnalysisApp:
         self._badge = badge
 
     def _build_controls(self) -> None:
-        """Source, browse, save, Start/Stop — one row under the header."""
+        """Source, region picker, save, Start/Stop — one row under the header."""
         bar = tk.Frame(self.root, bg=BG)
         bar.pack(fill=tk.X, padx=16, pady=12)
 
@@ -144,20 +143,7 @@ class MotionAnalysisApp:
             font=("Segoe UI", 10, "bold"),
             cursor="hand2",
         )
-        self.file_btn.pack(side=tk.LEFT, padx=(0, 10))
-
-        path_wrap = tk.Frame(bar, bg=LINE, padx=1, pady=1)
-        path_wrap.pack(side=tk.LEFT, fill=tk.X, expand=True)
-        tk.Entry(
-            path_wrap,
-            textvariable=self.path_var,
-            bg=CARD,
-            fg=TEXT,
-            insertbackground=TEXT,
-            bd=0,
-            font=("Segoe UI", 10),
-        ).pack(fill=tk.X, ipady=8, padx=8)
-
+        self.file_btn.pack(side=tk.LEFT, padx=(0, 6))
         tk.Button(
             bar,
             text=" Browse ",
@@ -171,7 +157,33 @@ class MotionAnalysisApp:
             cursor="hand2",
             activebackground=LINE,
             activeforeground=TEXT,
-        ).pack(side=tk.LEFT, padx=8)
+        ).pack(side=tk.LEFT, padx=(0, 12))
+
+        tk.Label(
+            bar,
+            text="ANALYSE",
+            bg=BG,
+            fg=MUTED,
+            font=("Segoe UI", 9, "bold"),
+        ).pack(side=tk.LEFT, padx=(0, 8))
+        region_wrap = tk.Frame(bar, bg=BG)
+        region_wrap.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        self._region_btns: dict[str, tk.Button] = {}
+        regions = (self.config.get("analysis") or {}).get("regions") or {}
+        for key, spec in regions.items():
+            label = str((spec or {}).get("label", key))
+            btn = tk.Button(
+                region_wrap,
+                text=f"  {label}  ",
+                command=lambda k=key: self._set_region(k),
+                bd=0,
+                padx=10,
+                pady=8,
+                font=("Segoe UI", 10, "bold"),
+                cursor="hand2",
+            )
+            btn.pack(side=tk.LEFT, padx=(0, 6))
+            self._region_btns[key] = btn
 
         self.save_check = tk.Checkbutton(
             bar,
@@ -215,34 +227,6 @@ class MotionAnalysisApp:
             activeforeground="white",
         )
         self.start_btn.pack(side=tk.RIGHT)
-
-    def _build_region_bar(self) -> None:
-        """Choose which body region to analyse. Locked while the camera is running."""
-        wrap = tk.Frame(self.root, bg=BG)
-        wrap.pack(fill=tk.X, padx=16, pady=(0, 8))
-        tk.Label(
-            wrap,
-            text="ANALYSE",
-            bg=BG,
-            fg=MUTED,
-            font=("Segoe UI", 9, "bold"),
-        ).pack(side=tk.LEFT, padx=(0, 10))
-        self._region_btns: dict[str, tk.Button] = {}
-        regions = (self.config.get("analysis") or {}).get("regions") or {}
-        for key, spec in regions.items():
-            label = str((spec or {}).get("label", key))
-            btn = tk.Button(
-                wrap,
-                text=f"  {label}  ",
-                command=lambda k=key: self._set_region(k),
-                bd=0,
-                padx=10,
-                pady=6,
-                font=("Segoe UI", 10, "bold"),
-                cursor="hand2",
-            )
-            btn.pack(side=tk.LEFT, padx=(0, 6))
-            self._region_btns[key] = btn
 
     def _set_region(self, region: str) -> None:
         """Switch region and rebuild gauges. Ignored during a take."""
@@ -346,6 +330,7 @@ class MotionAnalysisApp:
         if path:
             self.path_var.set(path)
             self._set_mode("file")
+            self.status_var.set(f"File ready  ·  {Path(path).name}")
 
     def _on_start(self) -> None:
         """Start the worker. Live needs the D455f free (Viewer closed)."""

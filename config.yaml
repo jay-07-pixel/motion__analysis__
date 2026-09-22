@@ -60,6 +60,14 @@ pose:
   min_tracking_confidence: 0.5
   # Do not draw a joint if MediaPipe visibility is below this.
   min_visibility: 0.5
+  # MediaPipe Hands: 21 joints per hand (knuckles + every fingertip).
+  # Pose only has wrist / thumb tip / index tip / pinky tip.
+  hands:
+    enabled: true
+    max_num_hands: 2
+    model_complexity: 1
+    min_detection_confidence: 0.5
+    min_tracking_confidence: 0.5
 
 # Stick-figure overlay (Step 3). Colours are OpenCV BGR: [Blue, Green, Red].
 overlay:
@@ -128,6 +136,22 @@ analysis:
   angle_gauge_max_deg: 180
   # After Stop, mode is the most common 10° bin.
   angle_mode_bin_deg: 10
+  # Extra Hands joints (knuckles / mid-finger). Tips already exist in Pose
+  # as left_thumb, left_index, left_pinky (and right_*). Regions that set
+  # include_hand_landmarks: true add these to the skeleton draw list.
+  hand_landmarks:
+    [
+      left_thumb_cmc, left_thumb_mcp, left_thumb_ip,
+      left_index_mcp, left_index_pip, left_index_dip,
+      left_middle_mcp, left_middle_pip, left_middle_dip, left_middle_tip,
+      left_ring_mcp, left_ring_pip, left_ring_dip, left_ring_tip,
+      left_pinky_mcp, left_pinky_pip, left_pinky_dip,
+      right_thumb_cmc, right_thumb_mcp, right_thumb_ip,
+      right_index_mcp, right_index_pip, right_index_dip,
+      right_middle_mcp, right_middle_pip, right_middle_dip, right_middle_tip,
+      right_ring_mcp, right_ring_pip, right_ring_dip, right_ring_tip,
+      right_pinky_mcp, right_pinky_pip, right_pinky_dip,
+    ]
   # GUI region picker. Keys must match analysis.regions below.
   region: full_body
   regions:
@@ -142,6 +166,7 @@ analysis:
       trail_joint: left_wrist
     upper_body:
       label: "Upper body"
+      include_hand_landmarks: true
       joints:
         [
           nose, left_eye, right_eye, left_ear, right_ear, mouth_left, mouth_right,
@@ -157,6 +182,7 @@ analysis:
       trail_joint: left_wrist
     both_arms:
       label: "Both arms"
+      include_hand_landmarks: true
       joints:
         [
           left_shoulder, right_shoulder, left_elbow, right_elbow,
@@ -171,6 +197,7 @@ analysis:
       trail_joint: left_wrist
     both_hands:
       label: "Both hands"
+      include_hand_landmarks: true
       joints:
         [
           left_wrist, right_wrist, left_pinky, right_pinky, left_index, right_index,
