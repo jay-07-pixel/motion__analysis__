@@ -330,14 +330,29 @@ class MotionDashboard(tk.Frame):
         self.joint_names = left_names + right_names
         self.recorder = TakeAngleRecorder(self.joint_names, bin_deg)
 
+        region = str(analysis_cfg.get("region", "full_body")).replace("_", " ")
         tk.Label(
             self,
-            text="LIVE ANGLES  ·  2D image degrees  ·  ~180° = straight",
+            text=f"LIVE ANGLES  ·  {region}  ·  2D image degrees  ·  ~180° = straight",
             bg=BG,
             fg=MUTED,
             font=("Segoe UI", 9, "bold"),
             anchor="w",
         ).pack(fill=tk.X, pady=(0, 6))
+
+        if not self.joint_names:
+            tk.Label(
+                self,
+                text="This region tracks landmarks only.\nNo joint-angle dials (face has no shoulder/elbow/wrist angle).",
+                bg=CARD,
+                fg=TEXT,
+                font=("Segoe UI", 11),
+                justify=tk.LEFT,
+                anchor="nw",
+            ).pack(fill=tk.BOTH, expand=True, padx=8, pady=16)
+            self.left = None
+            self.right = None
+            return
 
         cols = tk.Frame(self, bg=BG)
         cols.pack(fill=tk.BOTH, expand=True)
@@ -362,17 +377,23 @@ class MotionDashboard(tk.Frame):
     def on_start(self) -> None:
         """New take: empty samples, needles at rest until the first frame."""
         self.recorder.reset()
-        self.left.reset()
-        self.right.reset()
+        if self.left is not None:
+            self.left.reset()
+        if self.right is not None:
+            self.right.reset()
 
     def on_frame(self, angles: dict[str, float | None]) -> None:
         """UI thread: record sample and move needles."""
         self.recorder.add(angles)
-        self.left.set_live(angles)
-        self.right.set_live(angles)
+        if self.left is not None:
+            self.left.set_live(angles)
+        if self.right is not None:
+            self.right.set_live(angles)
 
     def on_stop(self, last: dict[str, float | None]) -> None:
         """Keep last needle; add min / max / mode marks."""
         stats = self.recorder.summary()
-        self.left.set_stopped(last, stats)
-        self.right.set_stopped(last, stats)
+        if self.left is not None:
+            self.left.set_stopped(last, stats)
+        if self.right is not None:
+            self.right.set_stopped(last, stats)

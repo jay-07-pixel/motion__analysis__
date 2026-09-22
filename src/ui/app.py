@@ -24,6 +24,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+from src.analysis.regions import apply_region, region_id
 from src.ui.live_charts import MotionDashboard
 from src.ui.session import MotionSession2D
 from src.utils.config_loader import load_config, resolve_project_path
@@ -68,6 +69,7 @@ class MotionAnalysisApp:
         self._error_dialog_shown = False
 
         self.mode_var = tk.StringVar(value=str(self.config["source"]["mode"]))
+        self.region_var = tk.StringVar(value=region_id(self.config))
         self.path_var = tk.StringVar(value=str(self.config["source"]["file_path"]))
         self.save_var = tk.BooleanVar(value=True)
         self.status_var = tk.StringVar(value="Idle  ·  close RealSense Viewer before Live")
@@ -75,9 +77,11 @@ class MotionAnalysisApp:
 
         self._build_header(project)
         self._build_controls()
+        self._build_region_bar()
         self._build_body()
         self._build_status()
         self._refresh_mode_buttons()
+        self._refresh_region_buttons()
         self._tick()
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
 
@@ -212,6 +216,66 @@ class MotionAnalysisApp:
         )
         self.start_btn.pack(side=tk.RIGHT)
 
+    def _build_region_bar(self) -> None:
+        """Choose which body region to analyse. Locked while the camera is running."""
+        wrap = tk.Frame(self.root, bg=BG)
+        wrap.pack(fill=tk.X, padx=16, pady=(0, 8))
+        tk.Label(
+            wrap,
+            text="ANALYSE",
+            bg=BG,
+            fg=MUTED,
+            font=("Segoe UI", 9, "bold"),
+        ).pack(side=tk.LEFT, padx=(0, 10))
+        self._region_btns: dict[str, tk.Button] = {}
+        regions = (self.config.get("analysis") or {}).get("regions") or {}
+        for key, spec in regions.items():
+            label = str((spec or {}).get("label", key))
+            btn = tk.Button(
+                wrap,
+                text=f"  {label}  ",
+                command=lambda k=key: self._set_region(k),
+                bd=0,
+                padx=10,
+                pady=6,
+                font=("Segoe UI", 10, "bold"),
+                cursor="hand2",
+            )
+            btn.pack(side=tk.LEFT, padx=(0, 6))
+            self._region_btns[key] = btn
+
+    def _set_region(self, region: str) -> None:
+        """Switch region and rebuild gauges. Ignored during a take."""
+        if self._running:
+            return
+        self.region_var.set(region)
+        self._refresh_region_buttons()
+        self._rebuild_dashboard()
+
+    def _refresh_region_buttons(self) -> None:
+        """Highlight the selected region pill."""
+        current = self.region_var.get()
+        for key, btn in self._region_btns.items():
+            on = key == current
+            btn.configure(
+                bg=ACCENT if on else IDLE_BTN,
+                fg="white" if on else TEXT,
+                activebackground=ACCENT if on else LINE,
+                activeforeground="white" if on else TEXT,
+                state=tk.DISABLED if self._running else tk.NORMAL,
+            )
+
+    def _analysis_for_ui(self) -> dict:
+        """Analysis dict after applying the selected region."""
+        cfg = apply_region(copy.deepcopy(self.config), self.region_var.get())
+        return cfg["analysis"]
+
+    def _rebuild_dashboard(self) -> None:
+        """Swap the right-hand dials to match the selected region."""
+        self.dashboard.destroy()
+        self.dashboard = MotionDashboard(self._dash_host, self._analysis_for_ui())
+        self.dashboard.pack(fill=tk.BOTH, expand=True)
+
     def _build_body(self) -> None:
         """Split screen: camera left, Left/Right body speedometers right."""
         body = tk.Frame(self.root, bg=BG)
@@ -231,8 +295,10 @@ class MotionAnalysisApp:
         )
         self.video_label.pack(fill=tk.BOTH, expand=True)
 
-        self.dashboard = MotionDashboard(body, self.config["analysis"])
-        self.dashboard.grid(row=0, column=1, sticky="nsew", padx=(8, 0))
+        self._dash_host = tk.Frame(body, bg=BG)
+        self._dash_host.grid(row=0, column=1, sticky="nsew", padx=(8, 0))
+        self.dashboard = MotionDashboard(self._dash_host, self._analysis_for_ui())
+        self.dashboard.pack(fill=tk.BOTH, expand=True)
 
     def _build_status(self) -> None:
         """Bottom line: idle / running / saved path."""
@@ -293,6 +359,7 @@ class MotionAnalysisApp:
         cfg = copy.deepcopy(self.config)
         cfg["source"]["mode"] = self.mode_var.get()
         cfg["source"]["file_path"] = self.path_var.get()
+        apply_region(cfg, self.region_var.get())
         self._stop_flag.clear()
         self._running = True
         self._error_dialog_shown = False
@@ -306,6 +373,7 @@ class MotionAnalysisApp:
         self._want_summary = True
         self.dashboard.on_start()
         self._set_running_buttons(True)
+        self._refresh_region_buttons()
         self.status_var.set("Starting…")
         self.badge_var.set("STARTING")
         self._badge.configure(bg=ACCENT)
@@ -326,6 +394,7 @@ class MotionAnalysisApp:
         else:
             self.start_btn.configure(state=tk.NORMAL, bg=START, fg="white")
             self.stop_btn.configure(state=tk.DISABLED, bg=IDLE_BTN, fg=TEXT)
+        self._refresh_region_buttons()
 
     def _run_session(self, cfg: dict) -> None:
         """Worker thread: MediaPipe + save. Do not touch Tk widgets here."""

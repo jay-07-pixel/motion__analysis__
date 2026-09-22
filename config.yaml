@@ -112,6 +112,9 @@ analysis:
     - name: right_wrist
       label: "R wrist"
       color_bgr: [255, 166, 76]
+    - name: nose
+      label: "Nose"
+      color_bgr: [0, 220, 255]
   # A still wrist still jitters ~1-4 px (MediaPipe). At 30 fps that fake
   # wiggle looks like speed. Moves smaller than this (pixels) count as 0.
   speed_deadband_px: 4
@@ -125,6 +128,87 @@ analysis:
   angle_gauge_max_deg: 180
   # After Stop, mode is the most common 10° bin.
   angle_mode_bin_deg: 10
+  # GUI region picker. Keys must match analysis.regions below.
+  region: full_body
+  regions:
+    full_body:
+      label: "Full body"
+      joints: []
+      angles: [left_shoulder, left_elbow, left_wrist, right_shoulder, right_elbow, right_wrist]
+      gauges:
+        left: [left_shoulder, left_elbow, left_wrist]
+        right: [right_shoulder, right_elbow, right_wrist]
+      highlight: [left_wrist, right_wrist]
+      trail_joint: left_wrist
+    upper_body:
+      label: "Upper body"
+      joints:
+        [
+          nose, left_eye, right_eye, left_ear, right_ear, mouth_left, mouth_right,
+          left_shoulder, right_shoulder, left_elbow, right_elbow,
+          left_wrist, right_wrist, left_pinky, right_pinky, left_index, right_index,
+          left_thumb, right_thumb, left_hip, right_hip,
+        ]
+      angles: [left_shoulder, left_elbow, left_wrist, right_shoulder, right_elbow, right_wrist]
+      gauges:
+        left: [left_shoulder, left_elbow, left_wrist]
+        right: [right_shoulder, right_elbow, right_wrist]
+      highlight: [left_wrist, right_wrist]
+      trail_joint: left_wrist
+    both_arms:
+      label: "Both arms"
+      joints:
+        [
+          left_shoulder, right_shoulder, left_elbow, right_elbow,
+          left_wrist, right_wrist, left_pinky, right_pinky, left_index, right_index,
+          left_thumb, right_thumb,
+        ]
+      angles: [left_shoulder, left_elbow, left_wrist, right_shoulder, right_elbow, right_wrist]
+      gauges:
+        left: [left_shoulder, left_elbow, left_wrist]
+        right: [right_shoulder, right_elbow, right_wrist]
+      highlight: [left_wrist, right_wrist]
+      trail_joint: left_wrist
+    both_hands:
+      label: "Both hands"
+      joints:
+        [
+          left_wrist, right_wrist, left_pinky, right_pinky, left_index, right_index,
+          left_thumb, right_thumb,
+        ]
+      angles: [left_wrist, right_wrist]
+      gauges:
+        left: [left_wrist]
+        right: [right_wrist]
+      highlight: [left_wrist, right_wrist]
+      trail_joint: left_wrist
+      bones:
+        - [left_wrist, left_thumb]
+        - [left_wrist, left_pinky]
+        - [right_wrist, right_thumb]
+        - [right_wrist, right_pinky]
+    face:
+      label: "Face"
+      joints:
+        [
+          nose, left_eye_inner, left_eye, left_eye_outer,
+          right_eye_inner, right_eye, right_eye_outer,
+          left_ear, right_ear, mouth_left, mouth_right,
+        ]
+      angles: []
+      gauges:
+        left: []
+        right: []
+      highlight: [nose]
+      trail_joint: null
+      bones:
+        - [nose, left_eye]
+        - [nose, right_eye]
+        - [left_eye, left_ear]
+        - [right_eye, right_ear]
+        - [mouth_left, mouth_right]
+        - [nose, mouth_left]
+        - [nose, mouth_right]
 
 # On-screen window. Title can change per step; quit key stays one character.
 display:

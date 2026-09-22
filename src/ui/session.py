@@ -16,6 +16,7 @@ import numpy as np
 
 from src.analysis.angles_2d import Angle2D, compute_configured_angles
 from src.analysis.draw_analysis import draw_angles_2d, draw_joint_coords_2d, draw_trail_2d
+from src.analysis.regions import region_label
 from src.analysis.trajectory_2d import trail_from_config
 from src.capture.factory import create_rgb_source
 from src.io.save_angles import AngleCsvWriter
@@ -71,7 +72,7 @@ class MotionSession2D:
             min_detection_confidence=float(pose_cfg["min_detection_confidence"]),
             min_tracking_confidence=float(pose_cfg["min_tracking_confidence"]),
         )
-        self.trail = trail_from_config(analysis_cfg)
+        self.trail = trail_from_config(analysis_cfg) if analysis_cfg.get("trail_joint") else None
         if self.save_files:
             self.run_dir = _make_run_dir(output_cfg)
             if output_cfg.get("save_csv", True):
@@ -112,17 +113,30 @@ class MotionSession2D:
         keypoints = self.extractor.extract(frame)
         time_sec = time.perf_counter() - self._t0
         angles = compute_configured_angles(keypoints, analysis_cfg["angles"], min_ang)
-        self.trail.update(keypoints, time_sec, min_ang)
+        if self.trail is not None:
+            self.trail.update(keypoints, time_sec, min_ang)
+            self.last_speed_px_s = self.trail.last_speed_px_s
+        else:
+            self.last_speed_px_s = None
         by_name = {item.name: item.degrees for item in angles}
         gauges = analysis_cfg.get("gauge_joints") or {}
         names = [str(n) for side in ("left", "right") for n in gauges.get(side, [])]
         self.last_gauge_angles = {name: by_name.get(name) for name in names}
         self.last_angles = angles
-        self.last_speed_px_s = self.trail.last_speed_px_s
         self.last_time_sec = time_sec
 
+        draw_names = analysis_cfg.get("draw_joints") or None
+        allowed = set(draw_names) if draw_names else None
+        extra_bones = [
+            (str(a), str(b))
+            for pair in (analysis_cfg.get("extra_bones") or [])
+            if isinstance(pair, (list, tuple)) and len(pair) == 2
+            for a, b in (pair,)
+        ]
+        csv_points = [kp for kp in keypoints if allowed is None or kp.name in allowed]
+
         if self.csv_writer is not None:
-            self.csv_writer.write_frame(self.frame_index, time_sec, keypoints, self.source.label)
+            self.csv_writer.write_frame(self.frame_index, time_sec, csv_points, self.source.label)
         if self.angle_writer is not None:
             self.angle_writer.write_frame(self.frame_index, time_sec, angles, self.source.label)
 
@@ -134,13 +148,16 @@ class MotionSession2D:
             line_thickness=int(overlay_cfg["line_thickness"]),
             point_color=bgr(overlay_cfg["point_color_bgr"]),
             line_color=bgr(overlay_cfg["line_color_bgr"]),
+            allowed_names=allowed,
+            extra_bones=extra_bones,
         )
-        draw_trail_2d(
-            canvas,
-            self.trail.polyline(),
-            bgr(analysis_cfg["trail_color_bgr"]),
-            int(analysis_cfg["trail_thickness"]),
-        )
+        if self.trail is not None:
+            draw_trail_2d(
+                canvas,
+                self.trail.polyline(),
+                bgr(analysis_cfg["trail_color_bgr"]),
+                int(analysis_cfg["trail_thickness"]),
+            )
         draw_angles_2d(canvas, angles, bgr(analysis_cfg["angle_text_bgr"]))
         self.last_highlight_uv = draw_joint_coords_2d(
             canvas,
@@ -148,7 +165,7 @@ class MotionSession2D:
             list(analysis_cfg.get("highlight_joints", [])),
             min_ang,
         )
-        _draw_hud(canvas, self.source.label)
+        _draw_hud(canvas, self.source.label, region_label(self.config))
 
         if self.video_writer is not None:
             self.video_writer.write(canvas)
@@ -220,11 +237,11 @@ def _write_run_json(path: Path, config: dict, frames: int, angle_rows: int) -> N
     path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
 
-def _draw_hud(frame, source_label) -> None:
-    """Small green tag on the video. Live numbers live in the GUI side panel."""
+def _draw_hud(frame, source_label, region: str = "Full body") -> None:
+    """Small green tag on the video: source, region, camera pixels."""
     cv2.putText(
         frame,
-        f"{source_label}  |  2D camera px",
+        f"{source_label}  |  {region}  |  2D camera px",
         (16, 32),
         cv2.FONT_HERSHEY_SIMPLEX,
         0.6,

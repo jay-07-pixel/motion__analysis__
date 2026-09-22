@@ -21,6 +21,8 @@ def draw_keypoints_2d(
     line_thickness: int,
     point_color: tuple[int, int, int],
     line_color: tuple[int, int, int],
+    allowed_names: set[str] | None = None,
+    extra_bones: list[tuple[str, str]] | None = None,
 ) -> np.ndarray:
     """Draw bones then joints on a copy of the frame.
 
@@ -32,14 +34,23 @@ def draw_keypoints_2d(
         line_thickness: Bone width in pixels.
         point_color: BGR colour for joints.
         line_color: BGR colour for bones.
+        allowed_names: If set, only these joints and bones are drawn.
+        extra_bones: Extra name pairs (e.g. face or hand links) from YAML.
 
     Returns:
         Annotated BGR image.
     """
     canvas = frame.copy()
     by_name = {kp.name: kp for kp in keypoints}
+    bones = list(SKELETON_BONES)
+    if extra_bones:
+        bones.extend(extra_bones)
 
-    for start_name, end_name in SKELETON_BONES:
+    for start_name, end_name in bones:
+        if allowed_names is not None and (
+            start_name not in allowed_names or end_name not in allowed_names
+        ):
+            continue
         start = by_name.get(start_name)
         end = by_name.get(end_name)
         if start is None or end is None:
@@ -56,6 +67,8 @@ def draw_keypoints_2d(
         )
 
     for kp in keypoints:
+        if allowed_names is not None and kp.name not in allowed_names:
+            continue
         if kp.confidence < min_visibility:
             continue
         cv2.circle(
