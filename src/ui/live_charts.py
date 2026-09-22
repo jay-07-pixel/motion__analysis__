@@ -18,8 +18,6 @@ LINE = "#2a3545"
 TEXT = "#eef3f8"
 MUTED = "#8b98a8"
 NEEDLE = "#4c9aff"
-FILL = "#3d8ef0"
-FILL_STOP = "#2a4a6a"
 MIN_C = "#3dd6c8"
 MAX_C = "#e06c5c"
 MODE_C = "#e8a338"
@@ -149,21 +147,9 @@ class Speedometer(tk.Canvas):
             fill_frac = min(1.0, max(0.0, float(self._live) / self.max_deg))
         if fill_frac > 0.005:
             # Tk: start 180 = left (0°). Negative extent sweeps clockwise toward 180°.
+            # Fill only the rim track so 45/90/135 stay readable in the middle.
             extent = -fill_frac * 180.0
-            pie = FILL if not self._stopped else FILL_STOP
             rim = NEEDLE if not self._stopped else MUTED
-            pad = 22
-            self.create_arc(
-                x0 + pad,
-                y0 + pad,
-                x1 - pad,
-                y1 - pad,
-                start=180,
-                extent=extent,
-                style=tk.PIESLICE,
-                fill=pie,
-                outline="",
-            )
             self.create_arc(
                 x0, y0, x1, y1, start=180, extent=extent, style=tk.ARC, outline=rim, width=16
             )
@@ -183,11 +169,11 @@ class Speedometer(tk.Canvas):
             )
             label = int(round(frac * self.max_deg))
             self.create_text(
-                cx + (radius - 24) * math.cos(ang),
-                cy - (radius - 24) * math.sin(ang),
+                cx + (radius - 38) * math.cos(ang),
+                cy - (radius - 38) * math.sin(ang),
                 text=str(label),
                 fill=MUTED,
-                font=("Segoe UI", 7),
+                font=("Segoe UI", 8),
             )
 
         self.create_text(cx, 14, text=self.title.upper(), fill=MUTED, font=("Segoe UI", 9, "bold"))
