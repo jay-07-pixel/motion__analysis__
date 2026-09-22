@@ -1,6 +1,7 @@
 """Step 6 — 2D motion analysis window.
 
 Layout: header, controls, video on the left, live numbers on the right.
+After Stop, a separate window shows this take's analysis report.
 Capture runs on a worker thread so Start/Stop stay clickable.
 
 Still 2D only (camera pixels, image-plane elbow degrees, wrist px/s).
@@ -23,6 +24,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+from src.ui.live_charts import TakeRecorder, show_analysis_report
 from src.ui.session import MotionSession2D
 from src.utils.config_loader import load_config, resolve_project_path
 
@@ -84,6 +86,11 @@ class MotionAnalysisApp:
         self._latest_bgr = None
         self._latest_angles = []
         self._latest_speed = None
+        self._latest_time = 0.0
+        self._latest_index = -1
+        self._chart_index = -1
+        self._want_report = False
+        self.recorder = TakeRecorder()
         self._status_from_worker = ""
         self._photo = None
         self._running = False
@@ -348,6 +355,11 @@ class MotionAnalysisApp:
             self._latest_bgr = None
             self._latest_angles = []
             self._latest_speed = None
+            self._latest_time = 0.0
+            self._latest_index = -1
+        self._chart_index = -1
+        self._want_report = True
+        self.recorder.reset()
         self._set_running_buttons(True)
         self.status_var.set("Starting…")
         self.badge_var.set("STARTING")
@@ -396,15 +408,23 @@ class MotionAnalysisApp:
                     self._latest_bgr = canvas
                     self._latest_angles = list(session.last_angles)
                     self._latest_speed = session.last_speed_px_s
+                    self._latest_time = session.last_time_sec
+                    self._latest_index = session.frame_index
         except Exception as error:
-            self._status_from_worker = f"Error: {error}"
+            self._status_from_worker = f"Error: {_friendly_start_error(error)}"
         finally:
-            summary = session.stop()
+            try:
+                summary = session.stop()
+            except Exception:
+                summary = {}
             extra = ""
             if summary.get("run_dir"):
                 extra = f"  ·  saved {summary['run_dir']}"
             prefix = self._status_from_worker or ""
-            if prefix.startswith("Error:") or prefix.startswith("End of file"):
+            if prefix.startswith("Error:"):
+                self._want_report = False
+                self._status_from_worker = prefix + extra
+            elif prefix.startswith("End of file"):
                 self._status_from_worker = prefix + extra
             else:
                 self._status_from_worker = "Stopped" + extra
@@ -418,20 +438,30 @@ class MotionAnalysisApp:
                 self._error_dialog_shown = True
                 self.badge_var.set("ERROR")
                 self._badge.configure(bg=STOP)
-                messagebox.showerror("Could not start", self._status_from_worker)
+                title = "Camera not found" if "not connected" in self._status_from_worker.lower() or "not found" in self._status_from_worker.lower() else "Could not start"
+                messagebox.showerror(title, self._status_from_worker.replace("Error: ", "", 1))
             if not self._running:
                 self._set_running_buttons(False)
                 if not self._status_from_worker.startswith("Error:"):
                     self.badge_var.set("IDLE")
                     self._badge.configure(bg=IDLE_BTN)
+                if self._want_report:
+                    self._want_report = False
+                    show_analysis_report(self.root, self.recorder)
         with self._frame_lock:
             frame = None if self._latest_bgr is None else self._latest_bgr.copy()
             angles = list(self._latest_angles)
             speed = self._latest_speed
+            t_sec = self._latest_time
+            frame_index = self._latest_index
         if self._running:
             self.badge_var.set("LIVE" if self.mode_var.get() == "live" else "FILE")
             self._badge.configure(bg=START)
         self._update_cards(angles, speed)
+        if self._running and frame_index != self._chart_index:
+            self._chart_index = frame_index
+            by_name = {angle.name: angle.degrees for angle in angles}
+            self.recorder.add(t_sec, by_name.get("left_elbow"), by_name.get("right_elbow"))
         if frame is not None:
             self._show_frame(frame)
         if not self._running and self._worker is not None and not self._worker.is_alive():
@@ -478,6 +508,18 @@ def _fmt_deg(value) -> str:
     if value is None:
         return "—"
     return f"{value:.0f}°"
+
+
+def _friendly_start_error(error: BaseException) -> str:
+    """Keep camera-missing errors short for the dialog; pass other errors through."""
+    text = str(error).strip() or error.__class__.__name__
+    lower = text.lower()
+    if "not connected" in lower or "not found" in lower or "no device" in lower:
+        return (
+            "Camera not connected / not found.\n\n"
+            "Plug in the RealSense D455f (USB 3) and close RealSense Viewer, then press Start."
+        )
+    return text
 
 
 def main() -> None:

@@ -57,19 +57,29 @@ class LiveRealSenseRGB(RGBSource):
         """Enable the RGB stream and start the camera.
 
         Raises:
-            RuntimeError: no D455f, USB 2 instead of USB 3, or width/height
-                not supported. Try 640x480 in config.yaml if this fails.
+            RuntimeError: no D455f plugged in, Viewer already using it,
+                USB 2 instead of USB 3, or width/height not supported.
         """
+        try:
+            connected = len(rs.context().query_devices())
+        except Exception:
+            connected = 0
+        if connected == 0:
+            raise RuntimeError(_CAMERA_MISSING)
+
         # rs.stream.color = the RGB sensor (same image you saw in Viewer 2D).
         # rs.format.bgr8  = Blue-Green-Red, 8 bits per channel — OpenCV native.
-        self._rs_config.enable_stream(
-            rs.stream.color,
-            self.width,
-            self.height,
-            rs.format.bgr8,
-            self.fps,
-        )
-        self._pipeline.start(self._rs_config)
+        try:
+            self._rs_config.enable_stream(
+                rs.stream.color,
+                self.width,
+                self.height,
+                rs.format.bgr8,
+                self.fps,
+            )
+            self._pipeline.start(self._rs_config)
+        except Exception as error:
+            raise RuntimeError(_friendly_camera_error(error)) from error
         self._running = True
 
     def get_frame(self) -> np.ndarray | None:
@@ -82,8 +92,10 @@ class LiveRealSenseRGB(RGBSource):
         if not self._running:
             raise RuntimeError("Camera is not started. Call start() first.")
 
-        # Blocks until the device has a new set of frames.
-        frames = self._pipeline.wait_for_frames()
+        try:
+            frames = self._pipeline.wait_for_frames(timeout_ms=5000)
+        except Exception as error:
+            raise RuntimeError(_friendly_camera_error(error)) from error
         color_frame = frames.get_color_frame()
         if not color_frame:
             return None
@@ -99,5 +111,31 @@ class LiveRealSenseRGB(RGBSource):
         this in a finally block).
         """
         if self._running:
-            self._pipeline.stop()
+            try:
+                self._pipeline.stop()
+            except Exception:
+                pass
             self._running = False
+
+
+_CAMERA_MISSING = (
+    "Camera not connected / not found. "
+    "Plug in the RealSense D455f on USB 3 and close RealSense Viewer."
+)
+
+
+def _friendly_camera_error(error: BaseException) -> str:
+    """Turn a RealSense SDK exception into a short message for the GUI."""
+    text = str(error).lower()
+    if any(
+        word in text
+        for word in ("no device", "not found", "couldn't resolve", "cannot resolve", "0 devices")
+    ):
+        return _CAMERA_MISSING
+    if any(word in text for word in ("busy", "in use", "occupied", "failed to set power")):
+        return (
+            "Camera is in use. Close RealSense Viewer (or another app) and try Start again."
+        )
+    if "timeout" in text:
+        return "Camera not connected / not found (no frames). Check the USB 3 cable."
+    return f"Could not start the camera: {error}"

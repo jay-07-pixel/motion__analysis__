@@ -10,6 +10,7 @@ venv/
 .idea/
 Thumbs.db
 Desktop.ini
+~$*
 
 # Local outputs (recordings and later keypoint CSVs)
 data/output/*

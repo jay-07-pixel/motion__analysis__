@@ -54,6 +54,7 @@ class MotionSession2D:
         self._t0 = 0.0
         self.last_angles: list[Angle2D] = []
         self.last_speed_px_s: float | None = None
+        self.last_time_sec: float = 0.0
 
     def start(self) -> None:
         """Open RGB source, pose model, and output files."""
@@ -112,6 +113,7 @@ class MotionSession2D:
         self.trail.update(keypoints, time_sec, min_ang)
         self.last_angles = angles
         self.last_speed_px_s = self.trail.last_speed_px_s
+        self.last_time_sec = time_sec
 
         if self.csv_writer is not None:
             self.csv_writer.write_frame(self.frame_index, time_sec, keypoints, self.source.label)
@@ -144,10 +146,16 @@ class MotionSession2D:
     def stop(self) -> dict:
         """Close camera/file and writers. Returns paths and counts for the UI."""
         if self.extractor is not None:
-            self.extractor.close()
+            try:
+                self.extractor.close()
+            except Exception:
+                pass
             self.extractor = None
         if self.source is not None:
-            self.source.stop()
+            try:
+                self.source.stop()
+            except Exception:
+                pass
             self.source = None
         angle_rows = 0
         if self.angle_writer is not None:
