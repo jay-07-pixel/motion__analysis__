@@ -87,6 +87,8 @@ class MotionSession2D:
                 min_tracking_confidence=float(
                     hands_cfg.get("min_tracking_confidence", pose_cfg["min_tracking_confidence"])
                 ),
+                swap_handedness=bool(hands_cfg.get("swap_handedness", True)),
+                match_to_pose_wrists=bool(hands_cfg.get("match_to_pose_wrists", True)),
             )
         self.trail = trail_from_config(analysis_cfg) if analysis_cfg.get("trail_joint") else None
         if self.save_files:
@@ -128,7 +130,10 @@ class MotionSession2D:
 
         keypoints = self.extractor.extract(frame)
         if self.hands_extractor is not None:
-            keypoints = merge_pose_and_hands(keypoints, self.hands_extractor.extract(frame))
+            keypoints = merge_pose_and_hands(
+                keypoints,
+                self.hands_extractor.extract(frame, pose_keypoints=keypoints),
+            )
         time_sec = time.perf_counter() - self._t0
         angles = compute_configured_angles(keypoints, analysis_cfg["angles"], min_ang)
         if self.trail is not None:

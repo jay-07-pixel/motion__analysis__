@@ -68,6 +68,11 @@ pose:
     model_complexity: 1
     min_detection_confidence: 0.5
     min_tracking_confidence: 0.5
+    # Hands Left/Right assumes a selfie (mirrored) image. D455f is not
+    # mirrored, so the label would put the left hand on the right arm.
+    swap_handedness: true
+    # Attach each hand to the nearest Pose wrist (same arm as the elbow).
+    match_to_pose_wrists: true
 
 # Stick-figure overlay (Step 3). Colours are OpenCV BGR: [Blue, Green, Red].
 overlay:

@@ -124,6 +124,8 @@ class HandsExtractor2D:
         model_complexity: int = 1,
         min_detection_confidence: float = 0.5,
         min_tracking_confidence: float = 0.5,
+        swap_handedness: bool = True,
+        match_to_pose_wrists: bool = True,
     ) -> None:
         """Create the Hands model. Settings come from config.yaml.
 
@@ -132,7 +134,14 @@ class HandsExtractor2D:
             model_complexity: 0 = faster, 1 = default (clearer fingers).
             min_detection_confidence: 0..1 first look at a hand.
             min_tracking_confidence: 0..1 keep the same hand next frame.
+            swap_handedness: Hands labels assume a selfie (mirrored) image.
+                RealSense is not mirrored, so we flip Left/Right if Pose
+                wrists are missing.
+            match_to_pose_wrists: Prefer the Pose wrist on the same arm
+                instead of the Hands Left/Right label.
         """
+        self._swap_handedness = bool(swap_handedness)
+        self._match_to_pose_wrists = bool(match_to_pose_wrists)
         self._hands = mp.solutions.hands.Hands(
             static_image_mode=False,
             max_num_hands=int(max_num_hands),
@@ -141,11 +150,17 @@ class HandsExtractor2D:
             min_tracking_confidence=float(min_tracking_confidence),
         )
 
-    def extract(self, bgr_frame: np.ndarray) -> list[Keypoint2D]:
+    def extract(
+        self,
+        bgr_frame: np.ndarray,
+        pose_keypoints: list[Keypoint2D] | None = None,
+    ) -> list[Keypoint2D]:
         """Return up to 21 joints per seen hand, or [] if none.
 
         Args:
             bgr_frame: Colour image (OpenCV BGR). Same frame as Pose.
+            pose_keypoints: Body joints from Pose. Used to put each hand
+                on the matching arm (left_wrist / right_wrist).
 
         Returns:
             left_* and/or right_* finger keypoints in camera pixels.
@@ -162,21 +177,39 @@ class HandsExtractor2D:
             return []
 
         handedness = list(results.multi_handedness or [])
-        keypoints: list[Keypoint2D] = []
+        raw_hands: list[tuple[str, float, list[tuple[float, float]]]] = []
         for index, hand in enumerate(results.multi_hand_landmarks):
-            side = _hand_side(handedness, index)
-            if side is None:
+            label = _hand_side(handedness, index)
+            if label is None:
                 continue
             score = _hand_score(handedness, index)
-            for landmark_index, landmark in enumerate(hand.landmark):
+            pixels = [
+                (float(landmark.x) * width, float(landmark.y) * height)
+                for landmark in hand.landmark
+            ]
+            raw_hands.append((label, score, pixels))
+
+        sides = _assign_hand_sides(
+            raw_hands,
+            pose_keypoints or [],
+            swap_handedness=self._swap_handedness,
+            match_to_pose_wrists=self._match_to_pose_wrists,
+        )
+
+        keypoints: list[Keypoint2D] = []
+        used_sides: set[str] = set()
+        for (label, score, pixels), side in zip(raw_hands, sides):
+            if side is None or side in used_sides:
+                continue
+            used_sides.add(side)
+            for landmark_index, (u_px, v_px) in enumerate(pixels):
                 stem = HAND_STEMS[landmark_index]
-                visibility = getattr(landmark, "visibility", 0.0) or score
                 keypoints.append(
                     Keypoint2D(
                         name=hand_joint_name(side, stem),
-                        u_px=float(landmark.x) * width,
-                        v_px=float(landmark.y) * height,
-                        confidence=float(visibility),
+                        u_px=u_px,
+                        v_px=v_px,
+                        confidence=float(score),
                     )
                 )
         return keypoints
@@ -184,6 +217,73 @@ class HandsExtractor2D:
     def close(self) -> None:
         """Free the MediaPipe Hands graph."""
         self._hands.close()
+
+
+def _assign_hand_sides(
+    raw_hands: list[tuple[str, float, list[tuple[float, float]]]],
+    pose_keypoints: list[Keypoint2D],
+    swap_handedness: bool,
+    match_to_pose_wrists: bool,
+) -> list[str | None]:
+    """Pick left/right for each Hands detection so arms do not cross.
+
+    MediaPipe Hands Left/Right is built for a mirrored selfie. Pose uses
+    the person's true left/right. Matching to Pose wrists keeps the
+    elbow→wrist bone on the same arm.
+    """
+    n = len(raw_hands)
+    fallback = []
+    for label, _score, _pixels in raw_hands:
+        side = label
+        if swap_handedness:
+            side = "right" if label == "left" else "left"
+        fallback.append(side)
+
+    if not match_to_pose_wrists or n == 0:
+        return fallback
+
+    by_name = {kp.name: kp for kp in pose_keypoints}
+    pose_uv = {}
+    for side in ("left", "right"):
+        wrist = by_name.get(f"{side}_wrist")
+        if wrist is not None:
+            pose_uv[side] = (wrist.u_px, wrist.v_px)
+    if not pose_uv:
+        return fallback
+
+    hand_uv = [pixels[0] for (_label, _score, pixels) in raw_hands]
+
+    if n == 1:
+        only = hand_uv[0]
+        best_side = min(pose_uv, key=lambda side: _dist2(only, pose_uv[side]))
+        return [best_side]
+
+    if n >= 2 and "left" in pose_uv and "right" in pose_uv:
+        # Two pairings: keep order vs swap. Pick the shorter total distance.
+        d_keep = _dist2(hand_uv[0], pose_uv["left"]) + _dist2(hand_uv[1], pose_uv["right"])
+        d_swap = _dist2(hand_uv[0], pose_uv["right"]) + _dist2(hand_uv[1], pose_uv["left"])
+        if d_keep <= d_swap:
+            return ["left", "right"] + [None] * (n - 2)
+        return ["right", "left"] + [None] * (n - 2)
+
+    sides: list[str | None] = []
+    taken: set[str] = set()
+    for uv in hand_uv:
+        available = [side for side in pose_uv if side not in taken]
+        if not available:
+            sides.append(None)
+            continue
+        best_side = min(available, key=lambda side: _dist2(uv, pose_uv[side]))
+        taken.add(best_side)
+        sides.append(best_side)
+    return sides
+
+
+def _dist2(a: tuple[float, float], b: tuple[float, float]) -> float:
+    """Squared pixel distance (no sqrt needed for comparisons)."""
+    du = a[0] - b[0]
+    dv = a[1] - b[1]
+    return du * du + dv * dv
 
 
 def _hand_side(handedness, index: int) -> str | None:
