@@ -15,7 +15,7 @@ import cv2
 import numpy as np
 
 from src.analysis.angles_2d import Angle2D, compute_configured_angles
-from src.analysis.draw_analysis import draw_angles_2d, draw_trail_2d
+from src.analysis.draw_analysis import draw_angles_2d, draw_joint_coords_2d, draw_trail_2d
 from src.analysis.trajectory_2d import trail_from_config
 from src.capture.factory import create_rgb_source
 from src.io.save_angles import AngleCsvWriter
@@ -54,7 +54,9 @@ class MotionSession2D:
         self._t0 = 0.0
         self.last_angles: list[Angle2D] = []
         self.last_speed_px_s: float | None = None
+        self.last_gauge_angles: dict[str, float | None] = {}
         self.last_time_sec: float = 0.0
+        self.last_highlight_uv: dict[str, tuple[float, float] | None] = {}
 
     def start(self) -> None:
         """Open RGB source, pose model, and output files."""
@@ -111,6 +113,10 @@ class MotionSession2D:
         time_sec = time.perf_counter() - self._t0
         angles = compute_configured_angles(keypoints, analysis_cfg["angles"], min_ang)
         self.trail.update(keypoints, time_sec, min_ang)
+        by_name = {item.name: item.degrees for item in angles}
+        gauges = analysis_cfg.get("gauge_joints") or {}
+        names = [str(n) for side in ("left", "right") for n in gauges.get(side, [])]
+        self.last_gauge_angles = {name: by_name.get(name) for name in names}
         self.last_angles = angles
         self.last_speed_px_s = self.trail.last_speed_px_s
         self.last_time_sec = time_sec
@@ -136,6 +142,12 @@ class MotionSession2D:
             int(analysis_cfg["trail_thickness"]),
         )
         draw_angles_2d(canvas, angles, bgr(analysis_cfg["angle_text_bgr"]))
+        self.last_highlight_uv = draw_joint_coords_2d(
+            canvas,
+            keypoints,
+            list(analysis_cfg.get("highlight_joints", [])),
+            min_ang,
+        )
         _draw_hud(canvas, self.source.label)
 
         if self.video_writer is not None:

@@ -79,6 +79,38 @@ class JointTrail2D:
         return [(int(round(u)), int(round(v))) for u, v, _ in self._points]
 
 
+class JointSpeed2D:
+    """Pixel speed of one named joint. No trail — used by the live gauges."""
+
+    def __init__(self, joint_name: str, deadband_px: float, smooth: float) -> None:
+        """Same jitter rules as the wrist trail so still joints read 0 px/s."""
+        self.joint_name = joint_name
+        self.deadband_px = float(deadband_px)
+        self.smooth = min(1.0, max(0.0, float(smooth)))
+        self._last: tuple[float, float, float] | None = None
+        self.last_speed_px_s: float | None = None
+
+    def update(self, keypoints: list[Keypoint2D], time_sec: float, min_confidence: float) -> None:
+        """Refresh speed from this frame's joint, if it is visible enough."""
+        match = next((kp for kp in keypoints if kp.name == self.joint_name), None)
+        if match is None or match.confidence < min_confidence:
+            return
+        if self._last is not None:
+            prev_u, prev_v, prev_t = self._last
+            dt = time_sec - prev_t
+            if dt > 1e-6:
+                dist = ((match.u_px - prev_u) ** 2 + (match.v_px - prev_v) ** 2) ** 0.5
+                instant = 0.0 if dist < self.deadband_px else dist / dt
+                if self.last_speed_px_s is None:
+                    self.last_speed_px_s = instant
+                else:
+                    alpha = self.smooth
+                    self.last_speed_px_s = alpha * instant + (1.0 - alpha) * self.last_speed_px_s
+                if self.last_speed_px_s < 8.0 and instant == 0.0:
+                    self.last_speed_px_s = 0.0
+        self._last = (match.u_px, match.v_px, time_sec)
+
+
 def trail_from_config(analysis_cfg: dict) -> JointTrail2D:
     """Build the configured wrist trail, including jitter settings."""
     return JointTrail2D(
@@ -87,3 +119,14 @@ def trail_from_config(analysis_cfg: dict) -> JointTrail2D:
         deadband_px=float(analysis_cfg.get("speed_deadband_px", 4.0)),
         smooth=float(analysis_cfg.get("speed_smooth", 0.35)),
     )
+
+
+def speeds_from_config(analysis_cfg: dict) -> dict[str, JointSpeed2D]:
+    """One speed tracker per gauge joint listed in YAML."""
+    deadband = float(analysis_cfg.get("speed_deadband_px", 4.0))
+    smooth = float(analysis_cfg.get("speed_smooth", 0.35))
+    names: list[str] = []
+    gauges = analysis_cfg.get("gauge_joints") or {}
+    for side in ("left", "right"):
+        names.extend(str(n) for n in gauges.get(side, []))
+    return {name: JointSpeed2D(name, deadband, smooth) for name in names}

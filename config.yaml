@@ -87,20 +87,44 @@ analysis:
   min_confidence: 0.5
   # Each item: angle at points[1], using points[0] and points[2].
   angles:
+    - name: left_shoulder
+      points: [left_hip, left_shoulder, left_elbow]
     - name: left_elbow
       points: [left_shoulder, left_elbow, left_wrist]
+    - name: left_wrist
+      points: [left_elbow, left_wrist, left_index]
+    - name: right_shoulder
+      points: [right_hip, right_shoulder, right_elbow]
     - name: right_elbow
       points: [right_shoulder, right_elbow, right_wrist]
+    - name: right_wrist
+      points: [right_elbow, right_wrist, right_index]
   trail_joint: left_wrist
   trail_max_points: 40
   trail_thickness: 3
   trail_color_bgr: [255, 80, 80]
   angle_text_bgr: [0, 255, 255]
+  # Draw (u, v) camera-pixel labels on these joints. Colours are BGR.
+  highlight_joints:
+    - name: left_wrist
+      label: "L wrist"
+      color_bgr: [80, 224, 200]
+    - name: right_wrist
+      label: "R wrist"
+      color_bgr: [255, 166, 76]
   # A still wrist still jitters ~1-4 px (MediaPipe). At 30 fps that fake
   # wiggle looks like speed. Moves smaller than this (pixels) count as 0.
   speed_deadband_px: 4
   # Blend new speed with the previous one (1 = jumpy, 0.3 = calmer).
   speed_smooth: 0.35
+  # Live analog dials: 2D image-plane angles (degrees), not speed.
+  gauge_joints:
+    left: [left_shoulder, left_elbow, left_wrist]
+    right: [right_shoulder, right_elbow, right_wrist]
+  # Needle full-scale. 180° ≈ straight in the photo.
+  angle_gauge_max_deg: 180
+  # After Stop, mode is the most common 10° bin.
+  angle_mode_bin_deg: 10
 
 # On-screen window. Title can change per step; quit key stays one character.
 display:

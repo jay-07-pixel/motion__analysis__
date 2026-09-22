@@ -24,7 +24,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.analysis.angles_2d import compute_configured_angles
-from src.analysis.draw_analysis import draw_angles_2d, draw_trail_2d
+from src.analysis.draw_analysis import draw_angles_2d, draw_joint_coords_2d, draw_trail_2d
 from src.analysis.trajectory_2d import trail_from_config
 from src.capture.factory import create_rgb_source
 from src.capture.video_file import VideoFileRGB
@@ -134,6 +134,12 @@ def main() -> None:
                 int(analysis_cfg["trail_thickness"]),
             )
             draw_angles_2d(canvas, angles, angle_color)
+            draw_joint_coords_2d(
+                canvas,
+                keypoints,
+                list(analysis_cfg.get("highlight_joints", [])),
+                min_ang,
+            )
             _draw_hud(canvas, source.label, angles, trail.last_speed_px_s, quit_key)
             if video_writer is not None:
                 video_writer.write(canvas)

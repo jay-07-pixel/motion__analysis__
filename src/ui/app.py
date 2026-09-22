@@ -1,7 +1,7 @@
 """Step 6 — 2D motion analysis window.
 
-Layout: header, controls, video on the left, live numbers on the right.
-After Stop, a separate window shows this take's analysis report.
+Split screen: camera on the left, Left/Right body angle dials on the right
+as soon as Start runs. After Stop the same dials show min / max / mode.
 Capture runs on a worker thread so Start/Stop stay clickable.
 
 Still 2D only (camera pixels, image-plane elbow degrees, wrist px/s).
@@ -24,7 +24,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from src.ui.live_charts import TakeRecorder, show_analysis_report
+from src.ui.live_charts import MotionDashboard
 from src.ui.session import MotionSession2D
 from src.utils.config_loader import load_config, resolve_project_path
 
@@ -41,33 +41,6 @@ STOP = "#c44c4c"
 IDLE_BTN = "#2a3340"
 
 
-class MetricCard(tk.Frame):
-    """One live number: title, big value, unit. Updated from the UI thread."""
-
-    def __init__(self, parent: tk.Widget, title: str, unit: str) -> None:
-        """Build a card. value starts as an em-dash until a person is seen."""
-        super().__init__(parent, bg=CARD, highlightbackground=LINE, highlightthickness=1)
-        tk.Label(self, text=title.upper(), bg=CARD, fg=MUTED, font=("Segoe UI", 10), anchor="w").pack(
-            fill=tk.X, padx=16, pady=(14, 0)
-        )
-        self.value_var = tk.StringVar(value="—")
-        tk.Label(
-            self,
-            textvariable=self.value_var,
-            bg=CARD,
-            fg=TEXT,
-            font=("Segoe UI", 32, "bold"),
-            anchor="w",
-        ).pack(fill=tk.X, padx=16, pady=(2, 0))
-        tk.Label(self, text=unit, bg=CARD, fg=MUTED, font=("Segoe UI", 10), anchor="w").pack(
-            fill=tk.X, padx=16, pady=(0, 14)
-        )
-
-    def set_value(self, text: str) -> None:
-        """Show a new number (or '—' if this joint was skipped)."""
-        self.value_var.set(text)
-
-
 class MotionAnalysisApp:
     """Main window. Worker thread owns MediaPipe; this class only draws widgets."""
 
@@ -77,20 +50,18 @@ class MotionAnalysisApp:
         self.config = load_config()
         project = self.config["project"]
         self.root.title(str(project["title"]) + " — 2D")
-        self.root.minsize(1100, 680)
+        self.root.minsize(1280, 780)
         self.root.configure(bg=BG)
 
         self._worker: threading.Thread | None = None
         self._stop_flag = threading.Event()
         self._frame_lock = threading.Lock()
         self._latest_bgr = None
-        self._latest_angles = []
-        self._latest_speed = None
+        self._latest_angles: dict[str, float | None] = {}
         self._latest_time = 0.0
         self._latest_index = -1
         self._chart_index = -1
-        self._want_report = False
-        self.recorder = TakeRecorder()
+        self._want_summary = False
         self._status_from_worker = ""
         self._photo = None
         self._running = False
@@ -242,52 +213,26 @@ class MotionAnalysisApp:
         self.start_btn.pack(side=tk.RIGHT)
 
     def _build_body(self) -> None:
-        """Video (left) and three metric cards (right)."""
+        """Split screen: camera left, Left/Right body speedometers right."""
         body = tk.Frame(self.root, bg=BG)
         body.pack(fill=tk.BOTH, expand=True, padx=16, pady=(0, 8))
+        body.grid_columnconfigure(0, weight=1)
+        body.grid_columnconfigure(1, weight=1)
+        body.grid_rowconfigure(0, weight=1)
 
         video_frame = tk.Frame(body, bg="#07090c", highlightbackground=LINE, highlightthickness=1)
-        video_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        video_frame.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
         self.video_label = tk.Label(
             video_frame,
             bg="#07090c",
             fg=MUTED,
-            text="Press Start to open the camera or file",
+            text="Press Start  ·  camera on this side, speedometers on the other",
             font=("Segoe UI", 12),
         )
         self.video_label.pack(fill=tk.BOTH, expand=True)
 
-        side = tk.Frame(body, bg=BG, width=300)
-        side.pack(side=tk.RIGHT, fill=tk.Y, padx=(12, 0))
-        side.pack_propagate(False)
-
-        tk.Label(
-            side,
-            text="LIVE 2D",
-            bg=BG,
-            fg=MUTED,
-            font=("Segoe UI", 9, "bold"),
-            anchor="w",
-        ).pack(fill=tk.X, pady=(0, 8))
-
-        self.left_card = MetricCard(side, "Left elbow", "degrees in the image  ·  ~180° = straight")
-        self.left_card.pack(fill=tk.X, pady=(0, 8))
-        self.right_card = MetricCard(side, "Right elbow", "degrees in the image  ·  ~180° = straight")
-        self.right_card.pack(fill=tk.X, pady=(0, 8))
-        trail_name = str(self.config["analysis"]["trail_joint"]).replace("_", " ")
-        self.speed_card = MetricCard(side, f"{trail_name} speed", "pixels / second  ·  not metres")
-        self.speed_card.pack(fill=tk.X, pady=(0, 8))
-
-        tk.Label(
-            side,
-            text="2D only. Face the camera.\nIf a number is —, that joint was too weak to trust.",
-            bg=BG,
-            fg=MUTED,
-            font=("Segoe UI", 9),
-            justify=tk.LEFT,
-            wraplength=270,
-            anchor="w",
-        ).pack(fill=tk.X, pady=(8, 0))
+        self.dashboard = MotionDashboard(body, self.config["analysis"])
+        self.dashboard.grid(row=0, column=1, sticky="nsew", padx=(8, 0))
 
     def _build_status(self) -> None:
         """Bottom line: idle / running / saved path."""
@@ -351,20 +296,19 @@ class MotionAnalysisApp:
         self._stop_flag.clear()
         self._running = True
         self._error_dialog_shown = False
+        self._status_from_worker = ""
         with self._frame_lock:
             self._latest_bgr = None
-            self._latest_angles = []
-            self._latest_speed = None
+            self._latest_angles = {}
             self._latest_time = 0.0
             self._latest_index = -1
         self._chart_index = -1
-        self._want_report = True
-        self.recorder.reset()
+        self._want_summary = True
+        self.dashboard.on_start()
         self._set_running_buttons(True)
         self.status_var.set("Starting…")
         self.badge_var.set("STARTING")
         self._badge.configure(bg=ACCENT)
-        self._clear_cards()
         self._worker = threading.Thread(target=self._run_session, args=(cfg,), daemon=True)
         self._worker.start()
 
@@ -383,12 +327,6 @@ class MotionAnalysisApp:
             self.start_btn.configure(state=tk.NORMAL, bg=START, fg="white")
             self.stop_btn.configure(state=tk.DISABLED, bg=IDLE_BTN, fg=TEXT)
 
-    def _clear_cards(self) -> None:
-        """Reset the three live numbers."""
-        self.left_card.set_value("—")
-        self.right_card.set_value("—")
-        self.speed_card.set_value("—")
-
     def _run_session(self, cfg: dict) -> None:
         """Worker thread: MediaPipe + save. Do not touch Tk widgets here."""
         session = MotionSession2D(cfg, save_files=bool(self.save_var.get()))
@@ -406,8 +344,7 @@ class MotionAnalysisApp:
                     continue
                 with self._frame_lock:
                     self._latest_bgr = canvas
-                    self._latest_angles = list(session.last_angles)
-                    self._latest_speed = session.last_speed_px_s
+                    self._latest_angles = dict(session.last_gauge_angles)
                     self._latest_time = session.last_time_sec
                     self._latest_index = session.frame_index
         except Exception as error:
@@ -422,7 +359,7 @@ class MotionAnalysisApp:
                 extra = f"  ·  saved {summary['run_dir']}"
             prefix = self._status_from_worker or ""
             if prefix.startswith("Error:"):
-                self._want_report = False
+                self._want_summary = False
                 self._status_from_worker = prefix + extra
             elif prefix.startswith("End of file"):
                 self._status_from_worker = prefix + extra
@@ -443,40 +380,28 @@ class MotionAnalysisApp:
             if not self._running:
                 self._set_running_buttons(False)
                 if not self._status_from_worker.startswith("Error:"):
-                    self.badge_var.set("IDLE")
+                    self.badge_var.set("SUMMARY")
                     self._badge.configure(bg=IDLE_BTN)
-                if self._want_report:
-                    self._want_report = False
-                    show_analysis_report(self.root, self.recorder)
+                if self._want_summary:
+                    self._want_summary = False
+                    with self._frame_lock:
+                        last_angles = dict(self._latest_angles)
+                    self.dashboard.on_stop(last_angles)
         with self._frame_lock:
             frame = None if self._latest_bgr is None else self._latest_bgr.copy()
-            angles = list(self._latest_angles)
-            speed = self._latest_speed
-            t_sec = self._latest_time
+            angles = dict(self._latest_angles)
             frame_index = self._latest_index
         if self._running:
             self.badge_var.set("LIVE" if self.mode_var.get() == "live" else "FILE")
             self._badge.configure(bg=START)
-        self._update_cards(angles, speed)
         if self._running and frame_index != self._chart_index:
             self._chart_index = frame_index
-            by_name = {angle.name: angle.degrees for angle in angles}
-            self.recorder.add(t_sec, by_name.get("left_elbow"), by_name.get("right_elbow"))
+            self.dashboard.on_frame(angles)
         if frame is not None:
             self._show_frame(frame)
         if not self._running and self._worker is not None and not self._worker.is_alive():
             self._set_running_buttons(False)
         self.root.after(30, self._tick)
-
-    def _update_cards(self, angles, speed) -> None:
-        """Map elbow names from the session onto the three cards."""
-        by_name = {angle.name: angle.degrees for angle in angles}
-        self.left_card.set_value(_fmt_deg(by_name.get("left_elbow")))
-        self.right_card.set_value(_fmt_deg(by_name.get("right_elbow")))
-        if speed is None:
-            self.speed_card.set_value("—")
-        else:
-            self.speed_card.set_value(f"{speed:.0f}")
 
     def _on_close(self) -> None:
         """Stop the camera thread, then close the window."""
@@ -501,13 +426,6 @@ class MotionAnalysisApp:
         image = Image.fromarray(rgb)
         self._photo = ImageTk.PhotoImage(image=image)
         self.video_label.configure(image=self._photo, text="")
-
-
-def _fmt_deg(value) -> str:
-    """Integer degrees, or dash if this elbow was skipped."""
-    if value is None:
-        return "—"
-    return f"{value:.0f}°"
 
 
 def _friendly_start_error(error: BaseException) -> str:
