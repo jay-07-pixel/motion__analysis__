@@ -41,3 +41,11 @@ class RGBSource(ABC):
     @abstractmethod
     def label(self) -> str:
         """Short name for the HUD, e.g. 'live', 'mp4', 'bag'."""
+
+    def color_intrinsics(self):
+        """Colour-camera intrinsics for deprojection, or None in 2D / mp4."""
+        return None
+
+    def depth_distance_m(self, u_px: float, v_px: float, window: int = 1) -> float:
+        """Aligned depth in metres at a colour pixel, or 0 if no depth."""
+        return 0.0

@@ -15,10 +15,12 @@ import cv2
 import numpy as np
 
 from src.analysis.angles_2d import Angle2D, compute_configured_angles
-from src.analysis.draw_analysis import draw_joint_coords_2d, draw_trail_2d
+from src.analysis.angles_3d import compute_configured_angles_3d
+from src.analysis.draw_analysis import draw_joint_coords_2d, draw_trail_2d, highlight_readout
 from src.analysis.regions import region_id, region_label
 from src.analysis.trajectory_2d import trail_from_config
 from src.capture.factory import create_rgb_source
+from src.geometry.deproject import attach_camera_xyz
 from src.io.save_angles import AngleCsvWriter
 from src.io.save_keypoints import KeypointCsvWriter
 from src.io.save_video import OverlayVideoWriter
@@ -60,6 +62,7 @@ class MotionSession2D:
         self.last_gauge_angles: dict[str, float | None] = {}
         self.last_time_sec: float = 0.0
         self.last_highlight_uv: dict[str, tuple[float, float] | None] = {}
+        self.last_highlight_readout: list[dict] = []
 
     def start(self) -> None:
         """Open RGB source, Pose + Hands models, and output files."""
@@ -134,8 +137,21 @@ class MotionSession2D:
                 keypoints,
                 self.hands_extractor.extract(frame, pose_keypoints=keypoints),
             )
+        space = str(analysis_cfg.get("space", "2d")).lower()
+        if space == "3d":
+            depth_cfg = (self.config.get("camera") or {}).get("depth") or {}
+            keypoints = attach_camera_xyz(
+                keypoints,
+                self.source,
+                min_depth_m=float(depth_cfg.get("min_m", 0.3)),
+                max_depth_m=float(depth_cfg.get("max_m", 6.0)),
+                sample_window=int(depth_cfg.get("sample_window", 3)),
+            )
         time_sec = time.perf_counter() - self._t0
-        angles = compute_configured_angles(keypoints, analysis_cfg["angles"], min_ang)
+        if space == "3d":
+            angles = compute_configured_angles_3d(keypoints, analysis_cfg["angles"], min_ang)
+        else:
+            angles = compute_configured_angles(keypoints, analysis_cfg["angles"], min_ang)
         if self.trail is not None:
             self.trail.update(keypoints, time_sec, min_ang)
             self.last_speed_px_s = self.trail.last_speed_px_s
@@ -181,13 +197,24 @@ class MotionSession2D:
                 bgr(analysis_cfg["trail_color_bgr"]),
                 int(analysis_cfg["trail_thickness"]),
             )
+        highlight_specs = list(analysis_cfg.get("highlight_joints", []))
+        display_unit = str(analysis_cfg.get("coord_3d_display", "cm"))
         self.last_highlight_uv = draw_joint_coords_2d(
             canvas,
             keypoints,
-            list(analysis_cfg.get("highlight_joints", [])),
+            highlight_specs,
             min_ang,
+            space=space,
+            display_unit=display_unit,
         )
-        _draw_hud(canvas, self.source.label, region_label(self.config))
+        self.last_highlight_readout = highlight_readout(
+            keypoints,
+            highlight_specs,
+            min_ang,
+            space=space,
+            display_unit=display_unit,
+        )
+        _draw_hud(canvas, self.source.label, region_label(self.config), space)
 
         if self.video_writer is not None:
             self.video_writer.write(canvas)
@@ -254,8 +281,16 @@ def _write_run_json(path: Path, config: dict, frames: int, angle_rows: int) -> N
     """Write a small handover snapshot for this GUI run."""
     payload = {
         "step": 6,
-        "coord_frame": "camera_2d_pixel",
-        "units_angle": "degrees_2d_image_plane",
+        "coord_frame": (
+            "camera_3d_metre"
+            if str((config.get("analysis") or {}).get("space", "2d")).lower() == "3d"
+            else "camera_2d_pixel"
+        ),
+        "units_angle": (
+            "degrees_3d_camera"
+            if str((config.get("analysis") or {}).get("space", "2d")).lower() == "3d"
+            else "degrees_2d_image_plane"
+        ),
         "units_speed": "pixels_per_second",
         "frames": frames,
         "angle_rows": angle_rows,
@@ -265,11 +300,15 @@ def _write_run_json(path: Path, config: dict, frames: int, angle_rows: int) -> N
     path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
 
-def _draw_hud(frame, source_label, region: str = "Full body") -> None:
-    """Small green tag on the video: source, region, camera pixels."""
+def _draw_hud(frame, source_label, region: str = "Full body", space: str = "2d") -> None:
+    """Small green tag on the video: source, region, 2D pixels or 3D metres."""
+    if str(space).lower() == "3d":
+        coord = "3D camera m  (origin=optical)"
+    else:
+        coord = "2D camera px"
     cv2.putText(
         frame,
-        f"{source_label}  |  {region}  |  2D camera px",
+        f"{source_label}  |  {region}  |  {coord}",
         (16, 32),
         cv2.FONT_HERSHEY_SIMPLEX,
         0.6,

@@ -30,30 +30,36 @@ def create_rgb_source(config: dict) -> RGBSource:
     """
     source_cfg = config["source"]
     mode = str(source_cfg["mode"]).strip().lower()
+    enable_depth = str((config.get("analysis") or {}).get("space", "2d")).lower() == "3d"
 
     if mode == "live":
         camera_cfg = config["camera"]
+        depth_cfg = camera_cfg.get("depth") or {}
         return LiveRealSenseRGB(
             width=int(camera_cfg["width"]),
             height=int(camera_cfg["height"]),
             fps=int(camera_cfg["fps"]),
+            enable_depth=enable_depth,
+            depth_width=int(depth_cfg.get("width", camera_cfg["width"])),
+            depth_height=int(depth_cfg.get("height", camera_cfg["height"])),
+            depth_fps=int(depth_cfg.get("fps", camera_cfg["fps"])),
         )
 
     if mode == "file":
         file_path = resolve_project_path(source_cfg["file_path"])
         loop = bool(source_cfg.get("loop", False))
-        return _source_from_file(file_path, loop=loop)
+        return _source_from_file(file_path, loop=loop, enable_depth=enable_depth)
 
     raise ValueError(
         f"source.mode must be 'live' or 'file' (got {mode!r}). Edit config.yaml."
     )
 
 
-def _source_from_file(file_path: Path, loop: bool) -> RGBSource:
+def _source_from_file(file_path: Path, loop: bool, enable_depth: bool = False) -> RGBSource:
     """Choose bag vs movie from the file extension (not hardcoded in the script)."""
     suffix = file_path.suffix.lower()
     if suffix == ".bag":
-        return BagFileRGB(file_path=file_path, loop=loop, realtime=True)
+        return BagFileRGB(file_path=file_path, loop=loop, realtime=True, enable_depth=enable_depth)
     if suffix in VIDEO_SUFFIXES:
         return VideoFileRGB(file_path=file_path, loop=loop)
     raise ValueError(

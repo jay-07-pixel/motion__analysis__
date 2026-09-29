@@ -50,7 +50,7 @@ class MotionAnalysisApp:
         self.root = root
         self.config = load_config()
         project = self.config["project"]
-        self.root.title(str(project["title"]) + " — 2D")
+        self.root.title(str(project["title"]))
         self.root.minsize(1280, 780)
         self.root.configure(bg=BG)
 
@@ -59,6 +59,7 @@ class MotionAnalysisApp:
         self._frame_lock = threading.Lock()
         self._latest_bgr = None
         self._latest_angles: dict[str, float | None] = {}
+        self._latest_readout: list[dict] = []
         self._latest_time = 0.0
         self._latest_index = -1
         self._chart_index = -1
@@ -70,10 +71,14 @@ class MotionAnalysisApp:
 
         self.mode_var = tk.StringVar(value=str(self.config["source"]["mode"]))
         self.region_var = tk.StringVar(value=region_id(self.config))
+        self.space_var = tk.StringVar(
+            value=str((self.config.get("analysis") or {}).get("space", "2d")).lower()
+        )
         self.path_var = tk.StringVar(value=str(self.config["source"]["file_path"]))
         self.save_var = tk.BooleanVar(value=True)
         self.status_var = tk.StringVar(value="Idle  ·  close RealSense Viewer before Live")
         self.badge_var = tk.StringVar(value="IDLE")
+        self.meta_var = tk.StringVar(value="")
 
         self._build_header(project)
         self._build_controls()
@@ -81,12 +86,14 @@ class MotionAnalysisApp:
         self._build_status()
         self._refresh_mode_buttons()
         self._refresh_region_buttons()
+        self._refresh_space_buttons()
+        self._refresh_header_meta()
         self._tick()
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
 
     def _build_header(self, project: dict) -> None:
         """Top strip: project name and camera model from config.yaml."""
-        header = tk.Frame(self.root, bg=PANEL, height=64)
+        header = tk.Frame(self.root, bg=PANEL, height=72)
         header.pack(fill=tk.X)
         header.pack_propagate(False)
         left = tk.Frame(header, bg=PANEL)
@@ -100,7 +107,7 @@ class MotionAnalysisApp:
         ).pack(anchor="w")
         tk.Label(
             left,
-            text=f"{project.get('student', '')}  ·  {project.get('camera_model', '')}  ·  2D camera pixels",
+            textvariable=self.meta_var,
             bg=PANEL,
             fg=MUTED,
             font=("Segoe UI", 9),
@@ -116,6 +123,22 @@ class MotionAnalysisApp:
         )
         badge.pack(side=tk.RIGHT, padx=20)
         self._badge = badge
+        space_wrap = tk.Frame(header, bg=PANEL)
+        space_wrap.pack(side=tk.RIGHT, padx=(0, 8))
+        self._space_btns: dict[str, tk.Button] = {}
+        for key, text in (("2d", "  2D  "), ("3d", "  3D  ")):
+            btn = tk.Button(
+                space_wrap,
+                text=text,
+                command=lambda k=key: self._set_space(k),
+                bd=0,
+                padx=12,
+                pady=6,
+                font=("Segoe UI", 10, "bold"),
+                cursor="hand2",
+            )
+            btn.pack(side=tk.LEFT, padx=4)
+            self._space_btns[key] = btn
 
     def _build_controls(self) -> None:
         """Source, region picker, save, Start/Stop — one row under the header."""
@@ -228,6 +251,40 @@ class MotionAnalysisApp:
         )
         self.start_btn.pack(side=tk.RIGHT)
 
+    def _set_space(self, space: str) -> None:
+        """Switch 2D pixels vs 3D camera metres. Locked while running."""
+        if self._running:
+            return
+        self.space_var.set(space)
+        self._refresh_space_buttons()
+        self._refresh_header_meta()
+        self._rebuild_dashboard()
+
+    def _refresh_space_buttons(self) -> None:
+        """Highlight 2D or 3D."""
+        current = self.space_var.get()
+        for key, btn in self._space_btns.items():
+            on = key == current
+            btn.configure(
+                bg=ACCENT if on else IDLE_BTN,
+                fg="white" if on else TEXT,
+                activebackground=ACCENT if on else LINE,
+                activeforeground="white" if on else TEXT,
+                state=tk.DISABLED if self._running else tk.NORMAL,
+            )
+
+    def _refresh_header_meta(self) -> None:
+        """Subtitle: student, camera, and whether we are in 2D pixels or 3D metres."""
+        project = self.config.get("project") or {}
+        if self.space_var.get() == "3d":
+            coord = "3D camera metres  ·  origin = optical centre"
+        else:
+            coord = "2D camera pixels"
+        self.meta_var.set(
+            f"{project.get('student', '')}  ·  {project.get('camera_model', '')}  ·  {coord}"
+        )
+        self.root.title(f"{project.get('title', 'Motion Analysis')}  —  {self.space_var.get().upper()}")
+
     def _set_region(self, region: str) -> None:
         """Switch region and rebuild gauges. Ignored during a take."""
         if self._running:
@@ -252,6 +309,7 @@ class MotionAnalysisApp:
     def _analysis_for_ui(self) -> dict:
         """Analysis dict after applying the selected region."""
         cfg = apply_region(copy.deepcopy(self.config), self.region_var.get())
+        cfg["analysis"]["space"] = self.space_var.get()
         return cfg["analysis"]
 
     def _rebuild_dashboard(self) -> None:
@@ -268,8 +326,27 @@ class MotionAnalysisApp:
         body.grid_columnconfigure(1, weight=1)
         body.grid_rowconfigure(0, weight=1)
 
-        video_frame = tk.Frame(body, bg="#07090c", highlightbackground=LINE, highlightthickness=1)
-        video_frame.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
+        left_col = tk.Frame(body, bg=BG)
+        left_col.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
+        left_col.grid_rowconfigure(1, weight=1)
+        left_col.grid_columnconfigure(0, weight=1)
+
+        self._readout_bar = tk.Frame(left_col, bg=BG)
+        self._readout_bar.grid(row=0, column=0, sticky="ew", pady=(0, 6))
+        self._readout_key: tuple[str, ...] = ()
+        self._readout_vars: dict[str, tk.StringVar] = {}
+        self._readout_placeholder = tk.Label(
+            self._readout_bar,
+            text="Joint coordinates appear here after Start",
+            bg=BG,
+            fg=MUTED,
+            font=("Segoe UI", 10),
+            anchor="w",
+        )
+        self._readout_placeholder.pack(fill=tk.X, pady=4)
+
+        video_frame = tk.Frame(left_col, bg="#07090c", highlightbackground=LINE, highlightthickness=1)
+        video_frame.grid(row=1, column=0, sticky="nsew")
         self.video_label = tk.Label(
             video_frame,
             bg="#07090c",
@@ -336,6 +413,16 @@ class MotionAnalysisApp:
         """Start the worker. Live needs the D455f free (Viewer closed)."""
         if self._running:
             return
+        if self.space_var.get() == "3d" and self.mode_var.get() == "file":
+            suffix = Path(self.path_var.get().strip()).suffix.lower()
+            if suffix != ".bag":
+                messagebox.showerror(
+                    "3D needs depth",
+                    "3D camera X/Y/Z (metres) needs RealSense depth.\n\n"
+                    "Use Live camera, or upload a .bag recorded in Viewer.\n"
+                    "An mp4 has colour only — stay on 2D for that file.",
+                )
+                return
         if self.mode_var.get() == "file":
             path = resolve_project_path(self.path_var.get().strip())
             if not path.is_file():
@@ -345,6 +432,7 @@ class MotionAnalysisApp:
         cfg["source"]["mode"] = self.mode_var.get()
         cfg["source"]["file_path"] = self.path_var.get()
         apply_region(cfg, self.region_var.get())
+        cfg["analysis"]["space"] = self.space_var.get()
         self._stop_flag.clear()
         self._running = True
         self._error_dialog_shown = False
@@ -352,6 +440,7 @@ class MotionAnalysisApp:
         with self._frame_lock:
             self._latest_bgr = None
             self._latest_angles = {}
+            self._latest_readout = []
             self._latest_time = 0.0
             self._latest_index = -1
         self._chart_index = -1
@@ -380,6 +469,7 @@ class MotionAnalysisApp:
             self.start_btn.configure(state=tk.NORMAL, bg=START, fg="white")
             self.stop_btn.configure(state=tk.DISABLED, bg=IDLE_BTN, fg=TEXT)
         self._refresh_region_buttons()
+        self._refresh_space_buttons()
 
     def _run_session(self, cfg: dict) -> None:
         """Worker thread: MediaPipe + save. Do not touch Tk widgets here."""
@@ -399,6 +489,10 @@ class MotionAnalysisApp:
                 with self._frame_lock:
                     self._latest_bgr = canvas
                     self._latest_angles = dict(session.last_gauge_angles)
+                    self._latest_readout = [
+                        {**row, "lines": list(row.get("lines") or [])}
+                        for row in session.last_highlight_readout
+                    ]
                     self._latest_time = session.last_time_sec
                     self._latest_index = session.frame_index
         except Exception as error:
@@ -444,7 +538,9 @@ class MotionAnalysisApp:
         with self._frame_lock:
             frame = None if self._latest_bgr is None else self._latest_bgr.copy()
             angles = dict(self._latest_angles)
+            readout = [dict(row) for row in self._latest_readout]
             frame_index = self._latest_index
+        self._show_readout(readout)
         if self._running:
             self.badge_var.set("LIVE" if self.mode_var.get() == "live" else "FILE")
             self._badge.configure(bg=START)
@@ -464,6 +560,66 @@ class MotionAnalysisApp:
             self._worker.join(timeout=2.0)
         self.root.destroy()
 
+    def _show_readout(self, rows: list[dict]) -> None:
+        """Cards above the live video: same wrist numbers as the overlay boxes."""
+        if not rows:
+            if self._readout_key:
+                for child in self._readout_bar.winfo_children():
+                    child.destroy()
+                self._readout_vars = {}
+                self._readout_key = ()
+                self._readout_placeholder = tk.Label(
+                    self._readout_bar,
+                    text="Joint coordinates appear here after Start",
+                    bg=BG,
+                    fg=MUTED,
+                    font=("Segoe UI", 10),
+                    anchor="w",
+                )
+                self._readout_placeholder.pack(fill=tk.X, pady=4)
+            return
+
+        key = tuple(str(row["name"]) for row in rows)
+        if key != self._readout_key:
+            for child in self._readout_bar.winfo_children():
+                child.destroy()
+            self._readout_vars = {}
+            for row in rows:
+                color = _bgr_to_hex(row.get("color_bgr") or (180, 200, 220))
+                card = tk.Frame(
+                    self._readout_bar,
+                    bg=CARD,
+                    highlightbackground=color,
+                    highlightthickness=2,
+                )
+                card.pack(side=tk.LEFT, padx=(0, 8), ipadx=8, ipady=4)
+                tk.Label(
+                    card,
+                    text=str(row.get("label", row["name"])),
+                    bg=CARD,
+                    fg=color,
+                    font=("Segoe UI", 10, "bold"),
+                    anchor="w",
+                ).pack(fill=tk.X)
+                var = tk.StringVar(value="\n".join(row.get("lines") or []))
+                tk.Label(
+                    card,
+                    textvariable=var,
+                    bg=CARD,
+                    fg=TEXT,
+                    font=("Consolas", 11),
+                    justify=tk.LEFT,
+                    anchor="w",
+                ).pack(fill=tk.X)
+                self._readout_vars[str(row["name"])] = var
+            self._readout_key = key
+            return
+
+        for row in rows:
+            var = self._readout_vars.get(str(row["name"]))
+            if var is not None:
+                var.set("\n".join(row.get("lines") or []))
+
     def _show_frame(self, bgr) -> None:
         """Fit the overlay into the video panel and display it."""
         h, w = bgr.shape[:2]
@@ -480,6 +636,12 @@ class MotionAnalysisApp:
         image = Image.fromarray(rgb)
         self._photo = ImageTk.PhotoImage(image=image)
         self.video_label.configure(image=self._photo, text="")
+
+
+def _bgr_to_hex(color) -> str:
+    """OpenCV BGR tuple -> Tk hex colour."""
+    blue, green, red = int(color[0]), int(color[1]), int(color[2])
+    return f"#{red:02x}{green:02x}{blue:02x}"
 
 
 def _friendly_start_error(error: BaseException) -> str:

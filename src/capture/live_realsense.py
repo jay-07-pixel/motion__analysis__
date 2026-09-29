@@ -1,13 +1,10 @@
-"""Live RGB frames from the Intel RealSense D455f.
+"""Live RGB (and optional aligned depth) from the Intel RealSense D455f.
 
-What this module does (Step 1):
-    Opens the colour sensor, waits for frames, and returns each frame as a
-    NumPy image that OpenCV can show. Depth is NOT started yet — sir said
-    2D first, and 2D keypoints will run on this RGB image.
+2D mode: colour stream only. Pixels (u, v) are 2D camera coordinates
+(origin = top-left of RGB).
 
-Why camera coordinates start here:
-    Each frame has a width and height from config. A pixel (u, v) on this
-    image is already in 2D camera coordinates (origin = top-left of RGB).
+3D mode: colour + depth. Depth is aligned to colour so we can deproject
+each (u, v) to camera metres (origin = colour optical centre).
 """
 
 from __future__ import annotations
@@ -16,32 +13,47 @@ import numpy as np
 import pyrealsense2 as rs
 
 from src.capture.base_source import RGBSource
+from src.capture.depth_util import color_intrinsics_from_profile, median_depth_m
 
 
 class LiveRealSenseRGB(RGBSource):
-    """Owns the RealSense pipeline for the colour (RGB) stream only.
+    """Owns the RealSense pipeline. Colour always; depth only when 3D is on."""
 
-    One object = one open camera. Call start(), then get_frame() in a loop,
-    then stop() when the window closes.
-    """
-
-    def __init__(self, width: int, height: int, fps: int) -> None:
+    def __init__(
+        self,
+        width: int,
+        height: int,
+        fps: int,
+        enable_depth: bool = False,
+        depth_width: int | None = None,
+        depth_height: int | None = None,
+        depth_fps: int | None = None,
+    ) -> None:
         """Store stream settings from config (do not start the camera yet).
 
         Args:
             width: Colour frame width in pixels (e.g. 1280).
             height: Colour frame height in pixels (e.g. 720).
             fps: Requested colour frames per second (e.g. 30).
+            enable_depth: True in 3D mode so we can read Z at each joint.
+            depth_width: Depth stream width (defaults to colour width).
+            depth_height: Depth stream height (defaults to colour height).
+            depth_fps: Depth stream FPS (defaults to colour FPS).
         """
         self.width = width
         self.height = height
         self.fps = fps
+        self.enable_depth = bool(enable_depth)
+        self.depth_width = int(depth_width or width)
+        self.depth_height = int(depth_height or height)
+        self.depth_fps = int(depth_fps or fps)
 
-        # pipeline = the RealSense SDK object that talks to the USB camera.
         self._pipeline = rs.pipeline()
-        # config = which streams to enable (here: colour only).
         self._rs_config = rs.config()
         self._running = False
+        self._align: rs.align | None = None
+        self._depth_frame = None
+        self._intrinsics = None
 
     @property
     def ended(self) -> bool:
@@ -54,7 +66,7 @@ class LiveRealSenseRGB(RGBSource):
         return "live"
 
     def start(self) -> None:
-        """Enable the RGB stream and start the camera.
+        """Enable RGB (and depth in 3D) and start the camera.
 
         Raises:
             RuntimeError: no D455f plugged in, Viewer already using it,
@@ -67,8 +79,6 @@ class LiveRealSenseRGB(RGBSource):
         if connected == 0:
             raise RuntimeError(_CAMERA_MISSING)
 
-        # rs.stream.color = the RGB sensor (same image you saw in Viewer 2D).
-        # rs.format.bgr8  = Blue-Green-Red, 8 bits per channel — OpenCV native.
         try:
             self._rs_config.enable_stream(
                 rs.stream.color,
@@ -77,13 +87,23 @@ class LiveRealSenseRGB(RGBSource):
                 rs.format.bgr8,
                 self.fps,
             )
-            self._pipeline.start(self._rs_config)
+            if self.enable_depth:
+                self._rs_config.enable_stream(
+                    rs.stream.depth,
+                    self.depth_width,
+                    self.depth_height,
+                    rs.format.z16,
+                    self.depth_fps,
+                )
+                self._align = rs.align(rs.stream.color)
+            profile = self._pipeline.start(self._rs_config)
+            self._intrinsics = color_intrinsics_from_profile(profile)
         except Exception as error:
             raise RuntimeError(_friendly_camera_error(error)) from error
         self._running = True
 
     def get_frame(self) -> np.ndarray | None:
-        """Wait for the next colour frame and return it as a BGR image.
+        """Wait for the next colour frame (and aligned depth in 3D).
 
         Returns:
             NumPy array shaped (height, width, 3), dtype uint8, or None if
@@ -96,26 +116,38 @@ class LiveRealSenseRGB(RGBSource):
             frames = self._pipeline.wait_for_frames(timeout_ms=5000)
         except Exception as error:
             raise RuntimeError(_friendly_camera_error(error)) from error
+
+        if self._align is not None:
+            frames = self._align.process(frames)
+            self._depth_frame = frames.get_depth_frame()
+        else:
+            self._depth_frame = None
+
         color_frame = frames.get_color_frame()
         if not color_frame:
             return None
-
-        # asanyarray copies the RealSense buffer into a NumPy image we can draw on.
+        if self._intrinsics is None:
+            self._intrinsics = color_frame.profile.as_video_stream_profile().get_intrinsics()
         return np.asanyarray(color_frame.get_data())
 
-    def stop(self) -> None:
-        """Release the camera so Viewer or another script can use it.
+    def color_intrinsics(self):
+        """Colour intrinsics (fx, fy, cx, cy) after start(), else None."""
+        return self._intrinsics
 
-        RealSense allows only one program at a time. Close Viewer before
-        running this script, and always call stop() (the Step 1 script does
-        this in a finally block).
-        """
+    def depth_distance_m(self, u_px: float, v_px: float, window: int = 1) -> float:
+        """Median aligned depth in metres around a colour pixel."""
+        return median_depth_m(self._depth_frame, u_px, v_px, window)
+
+    def stop(self) -> None:
+        """Release the camera so Viewer or another script can use it."""
         if self._running:
             try:
                 self._pipeline.stop()
             except Exception:
                 pass
             self._running = False
+            self._depth_frame = None
+            self._align = None
 
 
 _CAMERA_MISSING = (
@@ -129,7 +161,7 @@ def _friendly_camera_error(error: BaseException) -> str:
     text = str(error).lower()
     if any(
         word in text
-        for word in ("no device", "not found", "couldn't resolve", "cannot resolve", "0 devices")
+        for word in ("no device", "not found", "0 devices")
     ):
         return _CAMERA_MISSING
     if any(word in text for word in ("busy", "in use", "occupied", "failed to set power")):
@@ -138,4 +170,9 @@ def _friendly_camera_error(error: BaseException) -> str:
         )
     if "timeout" in text:
         return "Camera not connected / not found (no frames). Check the USB 3 cable."
+    if "couldn't resolve" in text or "cannot resolve" in text:
+        return (
+            "Could not start colour+depth at this resolution. "
+            "Use USB 3, close Viewer, or in config.yaml set camera.depth to 848x480."
+        )
     return f"Could not start the camera: {error}"

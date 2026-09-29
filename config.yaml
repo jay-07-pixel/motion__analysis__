@@ -20,7 +20,7 @@ project:
   title: "2D and 3D Motion Analysis"
   student: "Jay"
   camera_model: "Intel RealSense D455f"
-  # Current build phase. Keep this as 2d until we start depth -> 3D.
+  # Current GUI default. The 2D / 3D buttons override this at Start.
   phase: "2d"
 
 # Which pictures to read. Step 3 pose uses this same switch.
@@ -49,6 +49,16 @@ camera:
   # OpenCV uses BGR. RealSense can deliver colour already in bgr8 so we do
   # not convert RGB->BGR every frame on live USB.
   color_format: "bgr8"
+  # Depth stream used only when the GUI 3D button is on. Aligned to colour.
+  # D455f useful range is about 0.4 m .. 6 m.
+  depth:
+    width: 1280
+    height: 720
+    fps: 30
+    min_m: 0.3
+    max_m: 6.0
+    # Median of this many pixels around the joint (odd number).
+    sample_window: 3
 
 # MediaPipe Pose (Step 3). All thresholds live here — not in Python.
 pose:
@@ -96,6 +106,11 @@ output:
 # Step 5/6: 2D angles in the image plane + a joint trail.
 # Face the camera. Joint names must match MediaPipe (see src/pose/skeleton.py).
 analysis:
+  # GUI 2D / 3D buttons override this at Start.
+  # 2d = colour pixels (u, v). 3d = camera metres (X, Y, Z) from depth.
+  space: 2d
+  # Overlay text in 3D mode. CSV always stores metres (x_m, y_m, z_m).
+  coord_3d_display: cm
   # Skip an angle if any of its three joints is below this.
   min_confidence: 0.5
   # Each item: angle at points[1], using points[0] and points[2].

@@ -24,12 +24,19 @@ import numpy as np
 import pyrealsense2 as rs
 
 from src.capture.base_source import RGBSource
+from src.capture.depth_util import color_intrinsics_from_profile, median_depth_m
 
 
 class BagFileRGB(RGBSource):
     """Plays a RealSense .bag and yields the colour (RGB) stream."""
 
-    def __init__(self, file_path: Path, loop: bool = False, realtime: bool = True) -> None:
+    def __init__(
+        self,
+        file_path: Path,
+        loop: bool = False,
+        realtime: bool = True,
+        enable_depth: bool = False,
+    ) -> None:
         """Store path and playback options; the bag is opened in start().
 
         Args:
@@ -37,12 +44,17 @@ class BagFileRGB(RGBSource):
             loop: If True, replay from the start when the bag ends.
             realtime: If True, play at recorded speed. If False, go as
                 fast as the CPU (useful later for batch processing).
+            enable_depth: True in 3D mode: align recorded depth to colour.
         """
         self.file_path = Path(file_path)
         self.loop = loop
         self.realtime = realtime
+        self.enable_depth = bool(enable_depth)
         self._pipeline: rs.pipeline | None = None
         self._ended = False
+        self._align: rs.align | None = None
+        self._depth_frame = None
+        self._intrinsics = None
 
     @property
     def ended(self) -> bool:
@@ -76,12 +88,14 @@ class BagFileRGB(RGBSource):
                 f"Could not play bag (not a RealSense recording?): {self.file_path}\n{error}"
             ) from error
 
-        # Playback device: control speed. True = watch like a video.
         playback = profile.get_device().as_playback()
         playback.set_real_time(self.realtime)
 
         self._pipeline = pipeline
         self._ended = False
+        self._intrinsics = color_intrinsics_from_profile(profile)
+        self._align = rs.align(rs.stream.color) if self.enable_depth else None
+        self._depth_frame = None
 
     def get_frame(self) -> np.ndarray | None:
         """Wait for the next colour frame from the bag.
@@ -101,6 +115,12 @@ class BagFileRGB(RGBSource):
                 self._ended = True
             return None
 
+        if self._align is not None:
+            frames = self._align.process(frames)
+            self._depth_frame = frames.get_depth_frame()
+        else:
+            self._depth_frame = None
+
         color_frame = frames.get_color_frame()
         if not color_frame:
             return None
@@ -109,10 +129,22 @@ class BagFileRGB(RGBSource):
         # Match live_realsense.py: OpenCV windows expect BGR.
         if color_frame.profile.format() == rs.format.rgb8:
             image = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
+        if self._intrinsics is None:
+            self._intrinsics = color_frame.profile.as_video_stream_profile().get_intrinsics()
         return image
+
+    def color_intrinsics(self):
+        """Colour intrinsics from the bag, or None if not started."""
+        return self._intrinsics
+
+    def depth_distance_m(self, u_px: float, v_px: float, window: int = 1) -> float:
+        """Median aligned depth in metres around a colour pixel."""
+        return median_depth_m(self._depth_frame, u_px, v_px, window)
 
     def stop(self) -> None:
         """Stop playback and release the bag file."""
         if self._pipeline is not None:
             self._pipeline.stop()
             self._pipeline = None
+        self._depth_frame = None
+        self._align = None

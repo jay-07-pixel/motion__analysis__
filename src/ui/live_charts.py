@@ -80,12 +80,16 @@ def _binned_mode(values: list[float], bin_width: float) -> float:
     return winner * bin_width
 
 
-class Speedometer(tk.Canvas):
-    """One analog dial: live needle, optional min/max/mode ticks after Stop."""
+class Speedometer(tk.Frame):
+    """One analog dial: live needle, optional min/max/mode ticks after Stop.
+
+    The joint name and the degree sit above and below the canvas so they
+    never land on the arc.
+    """
 
     def __init__(self, parent: tk.Widget, title: str, max_deg: float) -> None:
         """Build an empty dial. Call set_live() from the UI thread."""
-        super().__init__(parent, bg=CARD, highlightthickness=0, height=168)
+        super().__init__(parent, bg=CARD)
         self.title = title
         self.max_deg = max(1.0, float(max_deg))
         self._live: float | None = None
@@ -93,7 +97,37 @@ class Speedometer(tk.Canvas):
         self._max: float | None = None
         self._mode: float | None = None
         self._stopped = False
-        self.bind("<Configure>", lambda _e: self._redraw())
+
+        self._title = tk.Label(
+            self,
+            text=title.upper(),
+            bg=CARD,
+            fg=MUTED,
+            font=("Segoe UI", 9, "bold"),
+        )
+        self._title.pack(side=tk.TOP, fill=tk.X, pady=(8, 0))
+
+        self.canvas = tk.Canvas(self, bg=CARD, highlightthickness=0, height=112)
+        self.canvas.pack(side=tk.TOP, fill=tk.X, padx=6, pady=(2, 0))
+        self._value = tk.Label(
+            self,
+            text="—",
+            bg=CARD,
+            fg=MUTED,
+            font=("Segoe UI", 13, "bold"),
+        )
+        self._value.pack(side=tk.TOP, fill=tk.X, pady=(0, 0))
+        self._stats = tk.Label(
+            self,
+            text=" ",
+            bg=CARD,
+            fg=MUTED,
+            font=("Segoe UI", 8),
+            justify=tk.CENTER,
+        )
+        self._stats.pack(side=tk.TOP, fill=tk.X, pady=(0, 8))
+        self.canvas.bind("<Configure>", self._on_configure)
+        self.bind("<Configure>", self._on_configure)
 
     def set_live(self, value: float | None) -> None:
         """Move the needle while the camera is running."""
@@ -129,37 +163,50 @@ class Speedometer(tk.Canvas):
         t = min(1.0, max(0.0, float(value) / self.max_deg))
         return math.pi - t * math.pi
 
+    def _on_configure(self, _event=None) -> None:
+        """Refit the arc when the panel is resized, and wrap the caption."""
+        width = max(int(self.winfo_width()) - 16, 80)
+        self._stats.configure(wraplength=width)
+        self._redraw()
+
     def _redraw(self) -> None:
-        """Paint the dial. Cheap enough to run from the 30 ms UI tick."""
-        self.delete("all")
-        w = max(int(self.winfo_width()), 180)
-        h = max(int(self.winfo_height()), 150)
-        cx, cy = w / 2, h * 0.72
-        radius = min(w * 0.42, h * 0.58)
+        """Paint the dial. The name and the degree are labels, not canvas text."""
+        canvas = self.canvas
+        canvas.delete("all")
+        w = max(int(canvas.winfo_width()), 40)
+        h = max(int(canvas.winfo_height()), 40)
+        # Hub sits on the bottom edge of the canvas, just above the degree.
+        radius = min((w - 36) / 2, h - 14)
+        radius = max(radius, 28)
+        cx = w / 2
+        cy = h - 8
+        stroke = 12 if radius >= 70 else 9
         x0, y0 = cx - radius, cy - radius
         x1, y1 = cx + radius, cy + radius
 
-        # Grey track (empty progress bar).
-        self.create_arc(x0, y0, x1, y1, start=0, extent=180, style=tk.ARC, outline=ARC, width=16)
+        canvas.create_arc(
+            x0, y0, x1, y1, start=0, extent=180, style=tk.ARC, outline=ARC, width=stroke
+        )
 
         fill_frac = 0.0
         if self._live is not None:
             fill_frac = min(1.0, max(0.0, float(self._live) / self.max_deg))
         if fill_frac > 0.005:
             # Tk: start 180 = left (0°). Negative extent sweeps clockwise toward 180°.
-            # Fill only the rim track so 45/90/135 stay readable in the middle.
             extent = -fill_frac * 180.0
             rim = NEEDLE if not self._stopped else MUTED
-            self.create_arc(
-                x0, y0, x1, y1, start=180, extent=extent, style=tk.ARC, outline=rim, width=16
+            canvas.create_arc(
+                x0, y0, x1, y1, start=180, extent=extent, style=tk.ARC, outline=rim, width=stroke
             )
 
+        # Scale numbers sit in the open bowl, clear of the rim stroke.
+        label_r = radius - stroke - 16
         for i in range(0, 5):
             frac = i / 4
             ang = math.pi - frac * math.pi
-            inner = radius - 10
-            outer = radius + 2
-            self.create_line(
+            inner = radius - stroke / 2 - 1
+            outer = radius + 1
+            canvas.create_line(
                 cx + inner * math.cos(ang),
                 cy - inner * math.sin(ang),
                 cx + outer * math.cos(ang),
@@ -167,16 +214,14 @@ class Speedometer(tk.Canvas):
                 fill=MUTED,
                 width=2,
             )
+            if label_r < 18:
+                continue
             label = int(round(frac * self.max_deg))
-            self.create_text(
-                cx + (radius - 38) * math.cos(ang),
-                cy - (radius - 38) * math.sin(ang),
-                text=str(label),
-                fill=MUTED,
-                font=("Segoe UI", 8),
-            )
-
-        self.create_text(cx, 14, text=self.title.upper(), fill=MUTED, font=("Segoe UI", 9, "bold"))
+            lx = cx + label_r * math.cos(ang)
+            ly = cy - label_r * math.sin(ang)
+            if i == 0 or i == 4:
+                ly -= 8
+            canvas.create_text(lx, ly, text=str(label), fill=MUTED, font=("Segoe UI", 8))
 
         if self._stopped:
             self._draw_mark(cx, cy, radius, self._min, MIN_C, 3)
@@ -186,44 +231,45 @@ class Speedometer(tk.Canvas):
         if self._live is not None:
             ang = self._angle(self._live)
             color = MUTED if self._stopped else NEEDLE
-            self.create_line(
+            canvas.create_line(
                 cx,
                 cy,
-                cx + (radius - 16) * math.cos(ang),
-                cy - (radius - 16) * math.sin(ang),
+                cx + (radius - stroke - 6) * math.cos(ang),
+                cy - (radius - stroke - 6) * math.sin(ang),
                 fill=color,
-                width=4,
+                width=3,
                 capstyle=tk.ROUND,
             )
-        self.create_oval(cx - 5, cy - 5, cx + 5, cy + 5, fill=TEXT, outline="")
+        canvas.create_oval(cx - 4, cy - 4, cx + 4, cy + 4, fill=TEXT, outline="")
+        self._paint_caption()
 
+    def _paint_caption(self) -> None:
+        """Degree under the dial; min / max / mode on the line below after Stop."""
         if self._stopped:
-            caption = (
-                f"min {self._fmt(self._min)}   max {self._fmt(self._max)}   "
-                f"mode {self._fmt(self._mode)}"
+            self._value.configure(text=self._fmt(self._live), fg=TEXT)
+            self._stats.configure(
+                text=(
+                    f"min {self._fmt(self._min)}    max {self._fmt(self._max)}    "
+                    f"mode {self._fmt(self._mode)}"
+                )
             )
-            self.create_text(cx, h - 14, text=caption, fill=MUTED, font=("Segoe UI", 8))
         elif self._live is None:
-            self.create_text(cx, h - 14, text="—  deg", fill=MUTED, font=("Segoe UI", 9))
+            self._value.configure(text="—", fg=MUTED)
+            self._stats.configure(text=" ")
         else:
-            self.create_text(
-                cx,
-                h - 14,
-                text=f"{self._live:.0f}°",
-                fill=TEXT,
-                font=("Segoe UI", 10, "bold"),
-            )
+            self._value.configure(text=f"{self._live:.0f}°", fg=TEXT)
+            self._stats.configure(text=" ")
 
     def _draw_mark(self, cx: float, cy: float, radius: float, value: float | None, color: str, width: int) -> None:
         """Radial tick from hub to rim (min or max after Stop)."""
         if value is None:
             return
         ang = self._angle(value)
-        self.create_line(
+        self.canvas.create_line(
             cx + 12 * math.cos(ang),
             cy - 12 * math.sin(ang),
-            cx + (radius - 6) * math.cos(ang),
-            cy - (radius - 6) * math.sin(ang),
+            cx + (radius - 8) * math.cos(ang),
+            cy - (radius - 8) * math.sin(ang),
             fill=color,
             width=width,
         )
@@ -239,7 +285,7 @@ class Speedometer(tk.Canvas):
         ty = -math.sin(ang)
         px, py = -ty, tx
         size = 8
-        self.create_polygon(
+        self.canvas.create_polygon(
             rim_x + tx * 4,
             rim_y + ty * 4,
             rim_x - tx * size + px * size,
@@ -282,7 +328,7 @@ class BodyGauges(tk.Frame):
         for name in joint_names:
             title = JOINT_LABELS.get(name, name.replace("_", " "))
             gauge = Speedometer(self, title, max_deg)
-            gauge.pack(fill=tk.BOTH, expand=True, padx=8, pady=4)
+            gauge.pack(fill=tk.BOTH, expand=True, padx=10, pady=(2, 8))
             self.gauges[name] = gauge
 
     def set_live(self, angles: dict[str, float | None]) -> None:
@@ -317,9 +363,14 @@ class MotionDashboard(tk.Frame):
         self.recorder = TakeAngleRecorder(self.joint_names, bin_deg)
 
         region = str(analysis_cfg.get("region", "full_body")).replace("_", " ")
+        space = str(analysis_cfg.get("space", "2d")).lower()
+        if space == "3d":
+            angle_note = "3D camera degrees  ·  origin = optical centre"
+        else:
+            angle_note = "2D image degrees  ·  ~180° = straight"
         tk.Label(
             self,
-            text=f"LIVE ANGLES  ·  {region}  ·  2D image degrees  ·  ~180° = straight",
+            text=f"LIVE ANGLES  ·  {region}  ·  {angle_note}",
             bg=BG,
             fg=MUTED,
             font=("Segoe UI", 9, "bold"),
