@@ -375,7 +375,7 @@ class MotionDashboard(tk.Frame):
             fg=MUTED,
             font=("Segoe UI", 9, "bold"),
             anchor="w",
-        ).pack(fill=tk.X, pady=(0, 6))
+        ).pack(fill=tk.X, pady=(0, 4))
 
         if not self.joint_names:
             tk.Label(
@@ -391,6 +391,7 @@ class MotionDashboard(tk.Frame):
             self.right = None
             return
 
+        self._build_mark_key()
         cols = tk.Frame(self, bg=BG)
         cols.pack(fill=tk.BOTH, expand=True)
         cols.grid_columnconfigure(0, weight=1)
@@ -403,13 +404,32 @@ class MotionDashboard(tk.Frame):
 
         self.legend = tk.Label(
             self,
-            text="Live needle  ·  after Stop:  cyan = min    coral = max    amber ▲ = mode",
+            text="Needle = last angle. Marks appear after Stop.",
             bg=BG,
             fg=MUTED,
             font=("Segoe UI", 8),
             anchor="w",
         )
         self.legend.pack(fill=tk.X, pady=(6, 0))
+
+    def _build_mark_key(self) -> None:
+        """Colour key for the marks drawn on the dials after Stop."""
+        key = tk.Frame(self, bg=BG)
+        key.pack(fill=tk.X, pady=(0, 6))
+        items = (
+            (MIN_C, "Min  ·  smallest angle"),
+            (MAX_C, "Max  ·  largest angle"),
+            (MODE_C, "Mode ▲  ·  most common 10°"),
+        )
+        for color, text in items:
+            tk.Label(key, text="    ", bg=color).pack(side=tk.LEFT, padx=(0, 6), pady=2)
+            tk.Label(
+                key,
+                text=text,
+                bg=BG,
+                fg=TEXT,
+                font=("Segoe UI", 9),
+            ).pack(side=tk.LEFT, padx=(0, 16))
 
     def on_start(self) -> None:
         """New take: empty samples, needles at rest until the first frame."""

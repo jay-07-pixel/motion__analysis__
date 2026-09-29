@@ -58,7 +58,13 @@ camera:
     min_m: 0.3
     max_m: 6.0
     # Median of this many pixels around the joint (odd number).
-    sample_window: 3
+    sample_window: 5
+    # Calm a still joint. 1 = raw depth (jumpy), 0.35 = blend with the last point.
+    smooth: 0.35
+    # Moves smaller than this (metres) stay put. 0.008 m = 0.8 cm.
+    deadband_m: 0.008
+    # If depth blinks off, keep the last camera point for this many frames.
+    hold_frames: 5
 
 # MediaPipe Pose (Step 3). All thresholds live here — not in Python.
 pose:

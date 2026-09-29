@@ -16,11 +16,11 @@ import numpy as np
 
 from src.analysis.angles_2d import Angle2D, compute_configured_angles
 from src.analysis.angles_3d import compute_configured_angles_3d
-from src.analysis.draw_analysis import draw_joint_coords_2d, draw_trail_2d, highlight_readout
+from src.analysis.draw_analysis import draw_trail_2d, highlight_readout
 from src.analysis.regions import region_id, region_label
 from src.analysis.trajectory_2d import trail_from_config
 from src.capture.factory import create_rgb_source
-from src.geometry.deproject import attach_camera_xyz
+from src.geometry.deproject import CameraXyzSmoother, attach_camera_xyz
 from src.io.save_angles import AngleCsvWriter
 from src.io.save_keypoints import KeypointCsvWriter
 from src.io.save_video import OverlayVideoWriter
@@ -61,8 +61,8 @@ class MotionSession2D:
         self.last_speed_px_s: float | None = None
         self.last_gauge_angles: dict[str, float | None] = {}
         self.last_time_sec: float = 0.0
-        self.last_highlight_uv: dict[str, tuple[float, float] | None] = {}
         self.last_highlight_readout: list[dict] = []
+        self._xyz_smoother: CameraXyzSmoother | None = None
 
     def start(self) -> None:
         """Open RGB source, Pose + Hands models, and output files."""
@@ -107,6 +107,15 @@ class MotionSession2D:
                     fps=float(self.config["camera"]["fps"]),
                     codec=str(output_cfg.get("video_codec", "mp4v")),
                 )
+        depth_cfg = (self.config.get("camera") or {}).get("depth") or {}
+        if str(analysis_cfg.get("space", "2d")).lower() == "3d":
+            self._xyz_smoother = CameraXyzSmoother(
+                smooth=float(depth_cfg.get("smooth", 0.35)),
+                deadband_m=float(depth_cfg.get("deadband_m", 0.008)),
+                hold_frames=int(depth_cfg.get("hold_frames", 5)),
+            )
+        else:
+            self._xyz_smoother = None
         self.frame_index = 0
         self._t0 = time.perf_counter()
 
@@ -145,8 +154,10 @@ class MotionSession2D:
                 self.source,
                 min_depth_m=float(depth_cfg.get("min_m", 0.3)),
                 max_depth_m=float(depth_cfg.get("max_m", 6.0)),
-                sample_window=int(depth_cfg.get("sample_window", 3)),
+                sample_window=int(depth_cfg.get("sample_window", 5)),
             )
+            if self._xyz_smoother is not None:
+                keypoints = self._xyz_smoother.apply(keypoints)
         time_sec = time.perf_counter() - self._t0
         if space == "3d":
             angles = compute_configured_angles_3d(keypoints, analysis_cfg["angles"], min_ang)
@@ -199,14 +210,6 @@ class MotionSession2D:
             )
         highlight_specs = list(analysis_cfg.get("highlight_joints", []))
         display_unit = str(analysis_cfg.get("coord_3d_display", "cm"))
-        self.last_highlight_uv = draw_joint_coords_2d(
-            canvas,
-            keypoints,
-            highlight_specs,
-            min_ang,
-            space=space,
-            display_unit=display_unit,
-        )
         self.last_highlight_readout = highlight_readout(
             keypoints,
             highlight_specs,

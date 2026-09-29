@@ -11,6 +11,7 @@ Those are a model guess, not RealSense metres.
 
 from __future__ import annotations
 
+import math
 from dataclasses import replace
 
 import pyrealsense2 as rs
@@ -62,3 +63,76 @@ def attach_camera_xyz(
             )
         )
     return filled
+
+
+class CameraXyzSmoother:
+    """Calm camera X, Y, Z so a still joint does not flicker every frame.
+
+    RealSense depth and MediaPipe both jitter by a few millimetres. A still
+    hand then looks like it is moving. Small steps are held; larger steps
+    are blended with the previous camera point.
+    """
+
+    def __init__(self, smooth: float, deadband_m: float, hold_frames: int) -> None:
+        """Args come from camera.depth in config.yaml.
+
+        Args:
+            smooth: 0..1. Share of the new point (1 = raw, 0.3 = calmer).
+            deadband_m: Moves smaller than this stay on the last point.
+            hold_frames: Keep the last good point if depth drops briefly.
+        """
+        self.smooth = min(1.0, max(0.0, float(smooth)))
+        self.deadband_m = max(0.0, float(deadband_m))
+        self.hold_frames = max(0, int(hold_frames))
+        self._points: dict[str, tuple[float, float, float]] = {}
+        self._misses: dict[str, int] = {}
+
+    def apply(self, keypoints: list[Keypoint2D]) -> list[Keypoint2D]:
+        """Return keypoints with steadier camera metres. 2D pixels are unchanged."""
+        smoothed: list[Keypoint2D] = []
+        for kp in keypoints:
+            if kp.x_m is None or kp.y_m is None or kp.z_m is None:
+                smoothed.append(self._hold_last(kp))
+                continue
+            previous = self._points.get(kp.name)
+            if previous is None:
+                point = (float(kp.x_m), float(kp.y_m), float(kp.z_m))
+            else:
+                point = self._blend(previous, (float(kp.x_m), float(kp.y_m), float(kp.z_m)))
+            self._points[kp.name] = point
+            self._misses[kp.name] = 0
+            smoothed.append(
+                replace(kp, x_m=point[0], y_m=point[1], z_m=point[2], coord_frame="camera_3d_metre")
+            )
+        return smoothed
+
+    def _blend(
+        self,
+        previous: tuple[float, float, float],
+        current: tuple[float, float, float],
+    ) -> tuple[float, float, float]:
+        """Hold tiny noise; ease real motion toward the new camera point."""
+        dist = math.dist(previous, current)
+        if dist < self.deadband_m:
+            return previous
+        alpha = self.smooth
+        return tuple(alpha * now + (1.0 - alpha) * old for now, old in zip(current, previous))
+
+    def _hold_last(self, kp: Keypoint2D) -> Keypoint2D:
+        """Reuse the last camera point for a few frames when depth is missing."""
+        previous = self._points.get(kp.name)
+        if previous is None:
+            return kp
+        misses = self._misses.get(kp.name, 0) + 1
+        if misses > self.hold_frames:
+            self._points.pop(kp.name, None)
+            self._misses.pop(kp.name, None)
+            return kp
+        self._misses[kp.name] = misses
+        return replace(
+            kp,
+            x_m=previous[0],
+            y_m=previous[1],
+            z_m=previous[2],
+            coord_frame="camera_3d_metre",
+        )
