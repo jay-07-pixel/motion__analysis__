@@ -50,9 +50,6 @@ def apply_region(config: dict, region: str) -> dict:
             row for row in analysis.get("highlight_joints", []) if row.get("name") in names
         ]
 
-    if "trail_joint" in spec:
-        analysis["trail_joint"] = spec.get("trail_joint")
-
     joints = spec.get("joints")
     if spec.get("include_hand_landmarks") and joints:
         extra = [str(name) for name in (analysis.get("hand_landmarks") or [])]

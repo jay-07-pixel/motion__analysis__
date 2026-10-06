@@ -16,9 +16,10 @@ import numpy as np
 
 from src.analysis.angles_2d import Angle2D, compute_configured_angles
 from src.analysis.angles_3d import compute_configured_angles_3d
-from src.analysis.draw_analysis import draw_trail_2d, highlight_readout
+from src.analysis.dof_angles_3d import compute_initial_dofs, unavailable_initial_dofs
+from src.analysis.draw_analysis import draw_joint_frames, highlight_readout
 from src.analysis.regions import region_id, region_label
-from src.analysis.trajectory_2d import trail_from_config
+from src.analysis.velocity import VelocityTracker
 from src.capture.factory import create_rgb_source
 from src.geometry.deproject import CameraXyzSmoother, attach_camera_xyz
 from src.io.save_angles import AngleCsvWriter
@@ -33,6 +34,21 @@ from src.utils.config_loader import resolve_project_path
 def bgr(values) -> tuple[int, int, int]:
     """YAML [B, G, R] list -> OpenCV colour tuple."""
     return (int(values[0]), int(values[1]), int(values[2]))
+
+
+def _initial_dofs(space: str, keypoints, analysis_cfg: dict, min_confidence: float):
+    """New DOFs beside the dials. 2D stays unavailable. Thresholds come from YAML."""
+    if space != "3d":
+        return unavailable_initial_dofs("needs_3d")
+    dof_cfg = analysis_cfg.get("dof") or {}
+    if not bool(dof_cfg.get("enabled", True)):
+        return unavailable_initial_dofs("disabled")
+    return compute_initial_dofs(
+        keypoints,
+        min_confidence,
+        plane_singular_deg=float(dof_cfg["plane_singular_deg"]),
+        elbow_sign_deadband_deg=float(dof_cfg["elbow_sign_deadband_deg"]),
+    )
 
 
 class MotionSession2D:
@@ -50,7 +66,6 @@ class MotionSession2D:
         self.source = None
         self.extractor = None
         self.hands_extractor = None
-        self.trail = None
         self.csv_writer = None
         self.angle_writer = None
         self.video_writer = None
@@ -58,10 +73,13 @@ class MotionSession2D:
         self.frame_index = 0
         self._t0 = 0.0
         self.last_angles: list[Angle2D] = []
-        self.last_speed_px_s: float | None = None
         self.last_gauge_angles: dict[str, float | None] = {}
+        self.last_angular_dps: dict[str, float | None] = {}
+        self.last_linear_mps: dict[str, float | None] = {}
         self.last_time_sec: float = 0.0
         self.last_highlight_readout: list[dict] = []
+        self.last_joint_frames: list = []
+        self.last_dof_angles = unavailable_initial_dofs("needs_3d")
         self._xyz_smoother: CameraXyzSmoother | None = None
 
     def start(self) -> None:
@@ -93,7 +111,6 @@ class MotionSession2D:
                 swap_handedness=bool(hands_cfg.get("swap_handedness", True)),
                 match_to_pose_wrists=bool(hands_cfg.get("match_to_pose_wrists", True)),
             )
-        self.trail = trail_from_config(analysis_cfg) if analysis_cfg.get("trail_joint") else None
         if self.save_files:
             self.run_dir = _make_run_dir(output_cfg)
             if output_cfg.get("save_csv", True):
@@ -116,6 +133,14 @@ class MotionSession2D:
             )
         else:
             self._xyz_smoother = None
+        vel_cfg = analysis_cfg.get("velocity") or {}
+        self._linear_names = [str(name) for name in vel_cfg.get("linear_joints") or []]
+        self._velocity = VelocityTracker(
+            smooth=float(vel_cfg.get("smooth", 0.45)),
+            deadband_deg=float(vel_cfg.get("deadband_deg", 1.5)),
+            deadband_m=float(vel_cfg.get("deadband_m", 0.004)),
+            max_gap_sec=float(vel_cfg.get("max_gap_sec", 0.4)),
+        )
         self.frame_index = 0
         self._t0 = time.perf_counter()
 
@@ -160,18 +185,33 @@ class MotionSession2D:
                 keypoints = self._xyz_smoother.apply(keypoints)
         time_sec = time.perf_counter() - self._t0
         if space == "3d":
-            angles = compute_configured_angles_3d(keypoints, analysis_cfg["angles"], min_ang)
+            angles, self.last_joint_frames = compute_configured_angles_3d(
+                keypoints,
+                analysis_cfg["angles"],
+                min_ang,
+                frame_specs=list(analysis_cfg.get("joint_frames") or []),
+            )
         else:
             angles = compute_configured_angles(keypoints, analysis_cfg["angles"], min_ang)
-        if self.trail is not None:
-            self.trail.update(keypoints, time_sec, min_ang)
-            self.last_speed_px_s = self.trail.last_speed_px_s
-        else:
-            self.last_speed_px_s = None
+            self.last_joint_frames = []
+        self.last_dof_angles = _initial_dofs(space, keypoints, analysis_cfg, min_ang)
         by_name = {item.name: item.degrees for item in angles}
         gauges = analysis_cfg.get("gauge_joints") or {}
         names = [str(n) for side in ("left", "right") for n in gauges.get(side, [])]
         self.last_gauge_angles = {name: by_name.get(name) for name in names}
+        self.last_angular_dps = self._velocity.angular(time_sec, self.last_gauge_angles)
+        if space == "3d":
+            by_kp = {kp.name: kp for kp in keypoints}
+            points = {}
+            for name in self._linear_names:
+                kp = by_kp.get(name)
+                if kp is not None and kp.x_m is not None and kp.y_m is not None and kp.z_m is not None:
+                    points[name] = (float(kp.x_m), float(kp.y_m), float(kp.z_m))
+                else:
+                    points[name] = None
+            self.last_linear_mps = self._velocity.linear(time_sec, points)
+        else:
+            self.last_linear_mps = {name: None for name in self._linear_names}
         self.last_angles = angles
         self.last_time_sec = time_sec
 
@@ -201,12 +241,14 @@ class MotionSession2D:
             allowed_names=allowed,
             extra_bones=extra_bones,
         )
-        if self.trail is not None:
-            draw_trail_2d(
+        if space == "3d" and self.last_joint_frames:
+            draw_joint_frames(
                 canvas,
-                self.trail.polyline(),
-                bgr(analysis_cfg["trail_color_bgr"]),
-                int(analysis_cfg["trail_thickness"]),
+                self.last_joint_frames,
+                self.source.color_intrinsics(),
+                float(analysis_cfg.get("joint_frame_axis_m", 0.12)),
+                dict(analysis_cfg.get("joint_frame_colors_bgr") or {}),
+                allowed_names=allowed,
             )
         highlight_specs = list(analysis_cfg.get("highlight_joints", []))
         display_unit = str(analysis_cfg.get("coord_3d_display", "cm"))
@@ -294,7 +336,6 @@ def _write_run_json(path: Path, config: dict, frames: int, angle_rows: int) -> N
             if str((config.get("analysis") or {}).get("space", "2d")).lower() == "3d"
             else "degrees_2d_image_plane"
         ),
-        "units_speed": "pixels_per_second",
         "frames": frames,
         "angle_rows": angle_rows,
         "source": config.get("source", {}),

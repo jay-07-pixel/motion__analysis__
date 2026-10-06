@@ -1,10 +1,12 @@
-"""3D joint angles from three camera-metre keypoints.
+"""3D joint angles in camera metres.
 
-Same arccos(BA·BC) as 2D, but the vectors are (X, Y, Z) in the colour
-camera frame (origin = optical centre). This is the interior bone angle
-in 3D, not the angle in the photo.
+Preferred path: a local three-axis frame at the shoulder, elbow, and wrist
+(see joint_frames in config). The dial is the moving bone read inside
+that frame, so turning the limb in space does not change the bend.
 
-Needs RealSense depth at each of the three joints. Missing depth → skip.
+If that frame cannot be built, fall back to the raw angle at the middle
+of the three named points. Either way this is the bone angle in space,
+not the angle in the photo. Missing depth skips the angle.
 """
 
 from __future__ import annotations
@@ -12,6 +14,7 @@ from __future__ import annotations
 import math
 
 from src.analysis.angles_2d import Angle2D
+from src.geometry.joint_frame import JointFrame, build_joint_frames
 from src.pose.keypoints import Keypoint2D
 
 
@@ -47,12 +50,37 @@ def compute_configured_angles_3d(
     keypoints: list[Keypoint2D],
     angle_specs: list[dict],
     min_confidence: float,
-) -> list[Angle2D]:
-    """Compute each YAML angle from 3D camera points (skip if any Z missing)."""
+    frame_specs: list[dict] | None = None,
+) -> tuple[list[Angle2D], list[JointFrame]]:
+    """Compute each YAML angle from the joint frame when it exists.
+
+    Args:
+        keypoints: Joints with camera metres where depth was valid.
+        angle_specs: YAML angles list ({name, points}).
+        min_confidence: Skip a joint below this.
+        frame_specs: YAML joint_frames list. Empty keeps the raw 3-point angle.
+
+    Returns:
+        Angles for the dials, and the frames that were built (for drawing).
+    """
+    frames = build_joint_frames(keypoints, frame_specs or [], min_confidence)
+    by_frame = {frame.name: frame for frame in frames}
     by_name = {kp.name: kp for kp in keypoints}
     results: list[Angle2D] = []
     for spec in angle_specs:
-        names = spec["points"]
+        framed = by_frame.get(str(spec.get("name", "")))
+        if framed is not None:
+            results.append(
+                Angle2D(
+                    name=framed.name,
+                    degrees=framed.degrees,
+                    vertex_u_px=framed.vertex_u_px,
+                    vertex_v_px=framed.vertex_v_px,
+                    min_confidence=framed.min_confidence,
+                )
+            )
+            continue
+        names = spec.get("points") or []
         if len(names) != 3:
             continue
         joints = [by_name.get(name) for name in names]
@@ -77,4 +105,4 @@ def compute_configured_angles_3d(
                 min_confidence=conf,
             )
         )
-    return results
+    return results, frames

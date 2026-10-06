@@ -25,21 +25,10 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.analysis.regions import apply_region, region_id
-from src.ui.live_charts import MotionDashboard
+from src.ui.live_charts import JOINT_LABELS, MotionDashboard
 from src.ui.session import MotionSession2D
+from src.ui.theme import PAL, use_night
 from src.utils.config_loader import load_config, resolve_project_path
-
-# Window colours (not analysis settings — those stay in config.yaml).
-BG = "#101418"
-PANEL = "#171e28"
-CARD = "#1e2734"
-LINE = "#2a3545"
-TEXT = "#eef3f8"
-MUTED = "#8b98a8"
-ACCENT = "#4c9aff"
-START = "#2f9e6a"
-STOP = "#c44c4c"
-IDLE_BTN = "#2a3340"
 
 
 class MotionAnalysisApp:
@@ -52,18 +41,22 @@ class MotionAnalysisApp:
         project = self.config["project"]
         self.root.title(str(project["title"]))
         self.root.minsize(1280, 780)
-        self.root.configure(bg=BG)
+        self.root.configure(bg=PAL.bg)
 
         self._worker: threading.Thread | None = None
         self._stop_flag = threading.Event()
         self._frame_lock = threading.Lock()
         self._latest_bgr = None
         self._latest_angles: dict[str, float | None] = {}
+        self._latest_angular: dict[str, float | None] = {}
+        self._latest_linear: dict[str, float | None] = {}
         self._latest_readout: list[dict] = []
         self._latest_time = 0.0
         self._latest_index = -1
         self._chart_index = -1
         self._want_summary = False
+        self._report: tk.Toplevel | None = None
+        self._report_stats: dict | None = None
         self._status_from_worker = ""
         self._photo = None
         self._running = False
@@ -79,6 +72,9 @@ class MotionAnalysisApp:
         self.status_var = tk.StringVar(value="Idle  ·  close RealSense Viewer before Live")
         self.badge_var = tk.StringVar(value="IDLE")
         self.meta_var = tk.StringVar(value="")
+        self.theme_var = tk.StringVar(value="night")
+        self._badge_role = "idle"
+        self.gauge_step = float((self.config.get("analysis") or {}).get("angle_gauge_step_deg", 45))
 
         self._build_header(project)
         self._build_controls()
@@ -87,44 +83,67 @@ class MotionAnalysisApp:
         self._refresh_mode_buttons()
         self._refresh_region_buttons()
         self._refresh_space_buttons()
+        self._refresh_theme_buttons()
         self._refresh_header_meta()
         self._tick()
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
 
     def _build_header(self, project: dict) -> None:
         """Top strip: project name and camera model from config.yaml."""
-        header = tk.Frame(self.root, bg=PANEL, height=72)
+        header = tk.Frame(self.root, bg=PAL.panel, height=72)
         header.pack(fill=tk.X)
         header.pack_propagate(False)
-        left = tk.Frame(header, bg=PANEL)
+        self._header = header
+        left = tk.Frame(header, bg=PAL.panel)
         left.pack(side=tk.LEFT, padx=20, pady=10)
-        tk.Label(
+        self._header_left = left
+        self._title_label = tk.Label(
             left,
             text=str(project["title"]),
-            bg=PANEL,
-            fg=TEXT,
+            bg=PAL.panel,
+            fg=PAL.text,
             font=("Segoe UI", 16, "bold"),
-        ).pack(anchor="w")
-        tk.Label(
+        )
+        self._title_label.pack(anchor="w")
+        self._meta_label = tk.Label(
             left,
             textvariable=self.meta_var,
-            bg=PANEL,
-            fg=MUTED,
+            bg=PAL.panel,
+            fg=PAL.muted,
             font=("Segoe UI", 9),
-        ).pack(anchor="w")
+        )
+        self._meta_label.pack(anchor="w")
         badge = tk.Label(
             header,
             textvariable=self.badge_var,
-            bg=IDLE_BTN,
-            fg=TEXT,
+            bg=PAL.idle,
+            fg=PAL.text,
             font=("Segoe UI", 9, "bold"),
             padx=12,
             pady=4,
         )
         badge.pack(side=tk.RIGHT, padx=20)
         self._badge = badge
-        space_wrap = tk.Frame(header, bg=PANEL)
+        theme_wrap = tk.Frame(header, bg=PAL.panel)
+        theme_wrap.pack(side=tk.RIGHT, padx=(0, 8))
+        self._theme_wrap = theme_wrap
+        self._theme_btns: dict[str, tk.Button] = {}
+        for key, text in (("day", "  Day  "), ("night", "  Night  ")):
+            btn = tk.Button(
+                theme_wrap,
+                text=text,
+                command=lambda k=key: self._set_theme(k),
+                bd=0,
+                padx=12,
+                pady=6,
+                font=("Segoe UI", 10, "bold"),
+                cursor="hand2",
+            )
+            btn.pack(side=tk.LEFT, padx=4)
+            self._theme_btns[key] = btn
+        space_wrap = tk.Frame(header, bg=PAL.panel)
         space_wrap.pack(side=tk.RIGHT, padx=(0, 8))
+        self._space_wrap = space_wrap
         self._space_btns: dict[str, tk.Button] = {}
         for key, text in (("2d", "  2D  "), ("3d", "  3D  ")):
             btn = tk.Button(
@@ -142,8 +161,9 @@ class MotionAnalysisApp:
 
     def _build_controls(self) -> None:
         """Source, region picker, save, Start/Stop — one row under the header."""
-        bar = tk.Frame(self.root, bg=BG)
+        bar = tk.Frame(self.root, bg=PAL.bg)
         bar.pack(fill=tk.X, padx=16, pady=12)
+        self._controls = bar
 
         self.live_btn = tk.Button(
             bar,
@@ -167,30 +187,33 @@ class MotionAnalysisApp:
             cursor="hand2",
         )
         self.file_btn.pack(side=tk.LEFT, padx=(0, 6))
-        tk.Button(
+        self._browse_btn = tk.Button(
             bar,
             text=" Browse ",
             command=self._browse,
-            bg=IDLE_BTN,
-            fg=TEXT,
+            bg=PAL.idle,
+            fg=PAL.text,
             bd=0,
             padx=12,
             pady=8,
             font=("Segoe UI", 10),
             cursor="hand2",
-            activebackground=LINE,
-            activeforeground=TEXT,
-        ).pack(side=tk.LEFT, padx=(0, 12))
+            activebackground=PAL.line,
+            activeforeground=PAL.text,
+        )
+        self._browse_btn.pack(side=tk.LEFT, padx=(0, 12))
 
-        tk.Label(
+        self._analyse_label = tk.Label(
             bar,
             text="ANALYSE",
-            bg=BG,
-            fg=MUTED,
+            bg=PAL.bg,
+            fg=PAL.muted,
             font=("Segoe UI", 9, "bold"),
-        ).pack(side=tk.LEFT, padx=(0, 8))
-        region_wrap = tk.Frame(bar, bg=BG)
+        )
+        self._analyse_label.pack(side=tk.LEFT, padx=(0, 8))
+        region_wrap = tk.Frame(bar, bg=PAL.bg)
         region_wrap.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        self._region_wrap = region_wrap
         self._region_btns: dict[str, tk.Button] = {}
         regions = (self.config.get("analysis") or {}).get("regions") or {}
         for key, spec in regions.items():
@@ -212,11 +235,11 @@ class MotionAnalysisApp:
             bar,
             text="Save CSV + video",
             variable=self.save_var,
-            bg=BG,
-            fg=TEXT,
-            selectcolor=CARD,
-            activebackground=BG,
-            activeforeground=TEXT,
+            bg=PAL.bg,
+            fg=PAL.text,
+            selectcolor=PAL.card,
+            activebackground=PAL.bg,
+            activeforeground=PAL.text,
             font=("Segoe UI", 10),
         )
         self.save_check.pack(side=tk.LEFT, padx=8)
@@ -225,8 +248,8 @@ class MotionAnalysisApp:
             bar,
             text="  Stop  ",
             command=self._on_stop,
-            bg=IDLE_BTN,
-            fg=TEXT,
+            bg=PAL.idle,
+            fg=PAL.text,
             bd=0,
             padx=16,
             pady=8,
@@ -239,7 +262,7 @@ class MotionAnalysisApp:
             bar,
             text="  Start  ",
             command=self._on_start,
-            bg=START,
+            bg=PAL.start,
             fg="white",
             bd=0,
             padx=18,
@@ -266,10 +289,10 @@ class MotionAnalysisApp:
         for key, btn in self._space_btns.items():
             on = key == current
             btn.configure(
-                bg=ACCENT if on else IDLE_BTN,
-                fg="white" if on else TEXT,
-                activebackground=ACCENT if on else LINE,
-                activeforeground="white" if on else TEXT,
+                bg=PAL.accent if on else PAL.idle,
+                fg="white" if on else PAL.text,
+                activebackground=PAL.accent if on else PAL.line,
+                activeforeground="white" if on else PAL.text,
                 state=tk.DISABLED if self._running else tk.NORMAL,
             )
 
@@ -299,10 +322,10 @@ class MotionAnalysisApp:
         for key, btn in self._region_btns.items():
             on = key == current
             btn.configure(
-                bg=ACCENT if on else IDLE_BTN,
-                fg="white" if on else TEXT,
-                activebackground=ACCENT if on else LINE,
-                activeforeground="white" if on else TEXT,
+                bg=PAL.accent if on else PAL.idle,
+                fg="white" if on else PAL.text,
+                activebackground=PAL.accent if on else PAL.line,
+                activeforeground="white" if on else PAL.text,
                 state=tk.DISABLED if self._running else tk.NORMAL,
             )
 
@@ -310,69 +333,178 @@ class MotionAnalysisApp:
         """Analysis dict after applying the selected region."""
         cfg = apply_region(copy.deepcopy(self.config), self.region_var.get())
         cfg["analysis"]["space"] = self.space_var.get()
+        cfg["analysis"]["angle_gauge_step_deg"] = self.gauge_step
         return cfg["analysis"]
 
-    def _rebuild_dashboard(self) -> None:
+    def _rebuild_dashboard(self, keep_summary: bool = False) -> None:
         """Swap the right-hand dials to match the selected region."""
+        held = self.dashboard.capture_summary() if keep_summary else None
         self.dashboard.destroy()
-        self.dashboard = MotionDashboard(self._dash_host, self._analysis_for_ui())
+        self.dashboard = MotionDashboard(
+            self._dash_host, self._analysis_for_ui(), on_step=self._remember_gauge_step
+        )
         self.dashboard.pack(fill=tk.BOTH, expand=True)
+        if held is not None:
+            self.dashboard.restore_summary(held)
+
+    def _set_theme(self, theme: str) -> None:
+        """Switch the window between the light Day theme and the dark Night theme."""
+        if theme == self.theme_var.get():
+            return
+        self.theme_var.set(theme)
+        use_night(theme == "night")
+        self._apply_theme()
+
+    def _paint_badge(self, role: str | None = None) -> None:
+        """Status pill. role is idle, accent, start, or stop."""
+        if role is not None:
+            self._badge_role = role
+        colours = {
+            "idle": PAL.idle,
+            "accent": PAL.accent,
+            "start": PAL.start,
+            "stop": PAL.stop,
+        }
+        self._badge.configure(bg=colours.get(self._badge_role, PAL.idle), fg=PAL.text)
+
+    def _refresh_theme_buttons(self) -> None:
+        """Highlight Day or Night, whichever is showing."""
+        current = self.theme_var.get()
+        for key, btn in self._theme_btns.items():
+            on = key == current
+            btn.configure(
+                bg=PAL.accent if on else PAL.idle,
+                fg="white" if on else PAL.text,
+                activebackground=PAL.accent if on else PAL.line,
+                activeforeground="white" if on else PAL.text,
+            )
+
+    def _apply_theme(self) -> None:
+        """Repaint chrome, dials, and coordinate cards in the current palette."""
+        self.root.configure(bg=PAL.bg)
+        for frame in (
+            self._header,
+            self._header_left,
+            self._theme_wrap,
+            self._space_wrap,
+            self._status_bar,
+        ):
+            frame.configure(bg=PAL.panel)
+        self._title_label.configure(bg=PAL.panel, fg=PAL.text)
+        self._meta_label.configure(bg=PAL.panel, fg=PAL.muted)
+        self._paint_badge()
+        for frame in (
+            self._controls,
+            self._region_wrap,
+            self._body,
+            self._left_col,
+            self._readout_bar,
+            self._dash_host,
+        ):
+            frame.configure(bg=PAL.bg)
+        self._analyse_label.configure(bg=PAL.bg, fg=PAL.muted)
+        self._status_label.configure(bg=PAL.panel, fg=PAL.muted)
+        self._browse_btn.configure(
+            bg=PAL.idle,
+            fg=PAL.text,
+            activebackground=PAL.line,
+            activeforeground=PAL.text,
+        )
+        self.save_check.configure(
+            bg=PAL.bg,
+            fg=PAL.text,
+            selectcolor=PAL.card,
+            activebackground=PAL.bg,
+            activeforeground=PAL.text,
+        )
+        self._video_frame.configure(bg=PAL.video, highlightbackground=PAL.line)
+        self.video_label.configure(bg=PAL.video, fg=PAL.muted)
+        try:
+            if self._readout_placeholder.winfo_exists():
+                self._readout_placeholder.configure(bg=PAL.bg, fg=PAL.muted)
+        except tk.TclError:
+            pass
+        self._readout_key = ("theme",)
+        self._refresh_theme_buttons()
+        self._refresh_mode_buttons()
+        self._refresh_region_buttons()
+        self._refresh_space_buttons()
+        self._set_running_buttons(self._running)
+        self._rebuild_dashboard(keep_summary=True)
+        if self._report is not None and self._report_stats is not None:
+            try:
+                still_open = bool(self._report.winfo_exists())
+            except tk.TclError:
+                still_open = False
+            if still_open:
+                self._show_report(self._report_stats)
 
     def _build_body(self) -> None:
         """Split screen: camera left, Left/Right body speedometers right."""
-        body = tk.Frame(self.root, bg=BG)
+        body = tk.Frame(self.root, bg=PAL.bg)
         body.pack(fill=tk.BOTH, expand=True, padx=16, pady=(0, 8))
-        body.grid_columnconfigure(0, weight=1)
-        body.grid_columnconfigure(1, weight=1)
+        self._body = body
+        body.grid_columnconfigure(0, weight=3)
+        body.grid_columnconfigure(1, weight=2)
         body.grid_rowconfigure(0, weight=1)
 
-        left_col = tk.Frame(body, bg=BG)
+        left_col = tk.Frame(body, bg=PAL.bg)
         left_col.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
+        self._left_col = left_col
         left_col.grid_rowconfigure(1, weight=1)
         left_col.grid_columnconfigure(0, weight=1)
 
-        self._readout_bar = tk.Frame(left_col, bg=BG)
+        self._readout_bar = tk.Frame(left_col, bg=PAL.bg)
         self._readout_bar.grid(row=0, column=0, sticky="ew", pady=(0, 6))
         self._readout_key: tuple[str, ...] = ()
         self._readout_vars: dict[str, tk.StringVar] = {}
         self._readout_placeholder = tk.Label(
             self._readout_bar,
             text="Joint coordinates appear here after Start",
-            bg=BG,
-            fg=MUTED,
+            bg=PAL.bg,
+            fg=PAL.muted,
             font=("Segoe UI", 10),
             anchor="w",
         )
         self._readout_placeholder.pack(fill=tk.X, pady=4)
 
-        video_frame = tk.Frame(left_col, bg="#07090c", highlightbackground=LINE, highlightthickness=1)
+        video_frame = tk.Frame(left_col, bg=PAL.video, highlightbackground=PAL.line, highlightthickness=1)
         video_frame.grid(row=1, column=0, sticky="nsew")
+        self._video_frame = video_frame
         self.video_label = tk.Label(
             video_frame,
-            bg="#07090c",
-            fg=MUTED,
+            bg=PAL.video,
+            fg=PAL.muted,
             text="Press Start  ·  camera on this side, speedometers on the other",
             font=("Segoe UI", 12),
         )
         self.video_label.pack(fill=tk.BOTH, expand=True)
 
-        self._dash_host = tk.Frame(body, bg=BG)
+        self._dash_host = tk.Frame(body, bg=PAL.bg)
         self._dash_host.grid(row=0, column=1, sticky="nsew", padx=(8, 0))
-        self.dashboard = MotionDashboard(self._dash_host, self._analysis_for_ui())
+        self.dashboard = MotionDashboard(
+            self._dash_host, self._analysis_for_ui(), on_step=self._remember_gauge_step
+        )
         self.dashboard.pack(fill=tk.BOTH, expand=True)
+
+    def _remember_gauge_step(self, step: float) -> None:
+        """Keep the dial scale when the region or theme rebuilds the dials."""
+        self.gauge_step = float(step)
 
     def _build_status(self) -> None:
         """Bottom line: idle / running / saved path."""
-        bar = tk.Frame(self.root, bg=PANEL)
+        bar = tk.Frame(self.root, bg=PAL.panel)
         bar.pack(fill=tk.X)
-        tk.Label(
+        self._status_bar = bar
+        self._status_label = tk.Label(
             bar,
             textvariable=self.status_var,
-            bg=PANEL,
-            fg=MUTED,
+            bg=PAL.panel,
+            fg=PAL.muted,
             font=("Segoe UI", 9),
             anchor="w",
-        ).pack(fill=tk.X, padx=16, pady=8)
+        )
+        self._status_label.pack(fill=tk.X, padx=16, pady=8)
 
     def _set_mode(self, mode: str) -> None:
         """Switch Live vs Upload from the two pill buttons."""
@@ -383,16 +515,16 @@ class MotionAnalysisApp:
         """Highlight the selected source pill."""
         live = self.mode_var.get() == "live"
         self.live_btn.configure(
-            bg=ACCENT if live else IDLE_BTN,
-            fg="white" if live else TEXT,
-            activebackground=ACCENT if live else LINE,
-            activeforeground="white" if live else TEXT,
+            bg=PAL.accent if live else PAL.idle,
+            fg="white" if live else PAL.text,
+            activebackground=PAL.accent if live else PAL.line,
+            activeforeground="white" if live else PAL.text,
         )
         self.file_btn.configure(
-            bg=ACCENT if not live else IDLE_BTN,
-            fg="white" if not live else TEXT,
-            activebackground=ACCENT if not live else LINE,
-            activeforeground="white" if not live else TEXT,
+            bg=PAL.accent if not live else PAL.idle,
+            fg="white" if not live else PAL.text,
+            activebackground=PAL.accent if not live else PAL.line,
+            activeforeground="white" if not live else PAL.text,
         )
 
     def _browse(self) -> None:
@@ -440,6 +572,8 @@ class MotionAnalysisApp:
         with self._frame_lock:
             self._latest_bgr = None
             self._latest_angles = {}
+            self._latest_angular = {}
+            self._latest_linear = {}
             self._latest_readout = []
             self._latest_time = 0.0
             self._latest_index = -1
@@ -450,7 +584,7 @@ class MotionAnalysisApp:
         self._refresh_region_buttons()
         self.status_var.set("Starting…")
         self.badge_var.set("STARTING")
-        self._badge.configure(bg=ACCENT)
+        self._paint_badge("accent")
         self._worker = threading.Thread(target=self._run_session, args=(cfg,), daemon=True)
         self._worker.start()
 
@@ -463,11 +597,11 @@ class MotionAnalysisApp:
     def _set_running_buttons(self, running: bool) -> None:
         """Enable Start or Stop, not both."""
         if running:
-            self.start_btn.configure(state=tk.DISABLED, bg=IDLE_BTN)
-            self.stop_btn.configure(state=tk.NORMAL, bg=STOP, fg="white")
+            self.start_btn.configure(state=tk.DISABLED, bg=PAL.idle)
+            self.stop_btn.configure(state=tk.NORMAL, bg=PAL.stop, fg="white")
         else:
-            self.start_btn.configure(state=tk.NORMAL, bg=START, fg="white")
-            self.stop_btn.configure(state=tk.DISABLED, bg=IDLE_BTN, fg=TEXT)
+            self.start_btn.configure(state=tk.NORMAL, bg=PAL.start, fg="white")
+            self.stop_btn.configure(state=tk.DISABLED, bg=PAL.idle, fg=PAL.text)
         self._refresh_region_buttons()
         self._refresh_space_buttons()
 
@@ -489,6 +623,8 @@ class MotionAnalysisApp:
                 with self._frame_lock:
                     self._latest_bgr = canvas
                     self._latest_angles = dict(session.last_gauge_angles)
+                    self._latest_angular = dict(session.last_angular_dps)
+                    self._latest_linear = dict(session.last_linear_mps)
                     self._latest_readout = [
                         {**row, "lines": list(row.get("lines") or [])}
                         for row in session.last_highlight_readout
@@ -522,31 +658,41 @@ class MotionAnalysisApp:
             if self._status_from_worker.startswith("Error:") and not self._error_dialog_shown:
                 self._error_dialog_shown = True
                 self.badge_var.set("ERROR")
-                self._badge.configure(bg=STOP)
+                self._paint_badge("stop")
                 title = "Camera not found" if "not connected" in self._status_from_worker.lower() or "not found" in self._status_from_worker.lower() else "Could not start"
                 messagebox.showerror(title, self._status_from_worker.replace("Error: ", "", 1))
             if not self._running:
                 self._set_running_buttons(False)
                 if not self._status_from_worker.startswith("Error:"):
                     self.badge_var.set("SUMMARY")
-                    self._badge.configure(bg=IDLE_BTN)
+                    self._paint_badge("idle")
                 if self._want_summary:
                     self._want_summary = False
                     with self._frame_lock:
                         last_angles = dict(self._latest_angles)
                     self.dashboard.on_stop(last_angles)
+                    self._show_report(
+                        {
+                            "angles": self.dashboard.recorder.summary(),
+                            "angular": self.dashboard.angular_recorder.summary(),
+                            "linear": self.dashboard.linear_recorder.summary(),
+                            "space": self.dashboard.space,
+                        }
+                    )
         with self._frame_lock:
             frame = None if self._latest_bgr is None else self._latest_bgr.copy()
             angles = dict(self._latest_angles)
+            angular = dict(self._latest_angular)
+            linear = dict(self._latest_linear)
             readout = [dict(row) for row in self._latest_readout]
             frame_index = self._latest_index
         self._show_readout(readout)
         if self._running:
             self.badge_var.set("LIVE" if self.mode_var.get() == "live" else "FILE")
-            self._badge.configure(bg=START)
+            self._paint_badge("start")
         if self._running and frame_index != self._chart_index:
             self._chart_index = frame_index
-            self.dashboard.on_frame(angles)
+            self.dashboard.on_frame(angles, angular, linear)
         if frame is not None:
             self._show_frame(frame)
         if not self._running and self._worker is not None and not self._worker.is_alive():
@@ -571,8 +717,8 @@ class MotionAnalysisApp:
                 self._readout_placeholder = tk.Label(
                     self._readout_bar,
                     text="Joint coordinates appear here after Start",
-                    bg=BG,
-                    fg=MUTED,
+                    bg=PAL.bg,
+                    fg=PAL.muted,
                     font=("Segoe UI", 10),
                     anchor="w",
                 )
@@ -588,7 +734,7 @@ class MotionAnalysisApp:
                 color = _bgr_to_hex(row.get("color_bgr") or (180, 200, 220))
                 card = tk.Frame(
                     self._readout_bar,
-                    bg=CARD,
+                    bg=PAL.card,
                     highlightbackground=color,
                     highlightthickness=2,
                 )
@@ -596,7 +742,7 @@ class MotionAnalysisApp:
                 tk.Label(
                     card,
                     text=str(row.get("label", row["name"])),
-                    bg=CARD,
+                    bg=PAL.card,
                     fg=color,
                     font=("Segoe UI", 10, "bold"),
                     anchor="w",
@@ -605,8 +751,8 @@ class MotionAnalysisApp:
                 tk.Label(
                     card,
                     textvariable=var,
-                    bg=CARD,
-                    fg=TEXT,
+                    bg=PAL.card,
+                    fg=PAL.text,
                     font=("Consolas", 11),
                     justify=tk.LEFT,
                     anchor="w",
@@ -619,6 +765,133 @@ class MotionAnalysisApp:
             var = self._readout_vars.get(str(row["name"]))
             if var is not None:
                 var.set("\n".join(row.get("lines") or []))
+
+    def _show_report(self, bundle: dict) -> None:
+        """Open a Report window: angles, angular speed, and linear speed."""
+        self._report_stats = bundle
+        if self._report is not None:
+            try:
+                if self._report.winfo_exists():
+                    self._report.destroy()
+            except tk.TclError:
+                pass
+        win = tk.Toplevel(self.root)
+        self._report = win
+        win.title("Report")
+        win.configure(bg=PAL.bg)
+        win.transient(self.root)
+
+        tk.Label(
+            win,
+            text="Report",
+            bg=PAL.bg,
+            fg=PAL.text,
+            font=("Segoe UI", 18, "bold"),
+            anchor="w",
+        ).pack(fill=tk.X, padx=20, pady=(16, 2))
+        tk.Label(
+            win,
+            text="Min, median, mode, and max from this take.",
+            bg=PAL.bg,
+            fg=PAL.muted,
+            font=("Segoe UI", 9),
+            anchor="w",
+        ).pack(fill=tk.X, padx=20, pady=(0, 12))
+
+        gauges = (self._analysis_for_ui().get("gauge_joints") or {})
+        sides = (
+            ("Left", [str(name) for name in gauges.get("left") or []]),
+            ("Right", [str(name) for name in gauges.get("right") or []]),
+        )
+        angle_names = [name for _heading, names in sides for name in names]
+        analysis = self._analysis_for_ui()
+        linear_names = [str(name) for name in ((analysis.get("velocity") or {}).get("linear_joints") or [])]
+        drawn = analysis.get("draw_joints") or []
+        if drawn:
+            linear_names = [name for name in linear_names if name in set(drawn)]
+        self._report_table(win, "Angle", angle_names, bundle.get("angles") or {}, _deg)
+        self._report_table(win, "Angular velocity", angle_names, bundle.get("angular") or {}, _dps)
+        if str(bundle.get("space", "2d")).lower() == "3d":
+            self._report_table(win, "Linear velocity", linear_names, bundle.get("linear") or {}, _mps)
+        else:
+            tk.Label(
+                win,
+                text="Linear velocity needs 3D camera metres.",
+                bg=PAL.bg,
+                fg=PAL.muted,
+                font=("Segoe UI", 10),
+                anchor="w",
+            ).pack(fill=tk.X, padx=20, pady=(0, 12))
+
+        tk.Button(
+            win,
+            text="  Close  ",
+            command=win.destroy,
+            bg=PAL.idle,
+            fg=PAL.text,
+            bd=0,
+            padx=16,
+            pady=8,
+            font=("Segoe UI", 10, "bold"),
+            cursor="hand2",
+            activebackground=PAL.line,
+            activeforeground=PAL.text,
+        ).pack(anchor="e", padx=20, pady=(0, 16))
+        win.update_idletasks()
+        win.geometry(f"+{self.root.winfo_rootx() + 80}+{self.root.winfo_rooty() + 80}")
+        win.lift()
+        win.focus_set()
+
+    def _report_table(self, win: tk.Toplevel, title: str, names: list[str], stats: dict, fmt) -> None:
+        """One Report card: min, median, mode, max for each name."""
+        card = tk.Frame(win, bg=PAL.card, highlightbackground=PAL.line, highlightthickness=1)
+        card.pack(fill=tk.X, padx=20, pady=(0, 12))
+        tk.Label(
+            card,
+            text=title,
+            bg=PAL.card,
+            fg=PAL.text,
+            font=("Segoe UI", 11, "bold"),
+            anchor="w",
+        ).grid(row=0, column=0, columnspan=5, sticky="w", padx=12, pady=(10, 6))
+        if not names:
+            tk.Label(
+                card,
+                text="No joints in this region.",
+                bg=PAL.card,
+                fg=PAL.muted,
+                font=("Segoe UI", 10),
+                anchor="w",
+            ).grid(row=1, column=0, sticky="w", padx=12, pady=(0, 10))
+            return
+        for col, heading in enumerate(("Joint", "Min", "Median", "Mode", "Max")):
+            tk.Label(
+                card,
+                text=heading,
+                bg=PAL.card,
+                fg=PAL.muted,
+                font=("Segoe UI", 9, "bold"),
+                anchor="w",
+            ).grid(row=1, column=col, sticky="w", padx=12, pady=(0, 4))
+        for row_i, name in enumerate(names, start=2):
+            row = stats.get(name) or {}
+            values = (
+                _side_label(name),
+                fmt(row.get("min")),
+                fmt(row.get("median")),
+                fmt(row.get("mode")),
+                fmt(row.get("max")),
+            )
+            for col, text in enumerate(values):
+                tk.Label(
+                    card,
+                    text=text,
+                    bg=PAL.card,
+                    fg=PAL.text,
+                    font=("Segoe UI", 12, "bold" if col == 0 else "normal"),
+                    anchor="w",
+                ).grid(row=row_i, column=col, sticky="w", padx=12, pady=4)
+        tk.Frame(card, bg=PAL.card, height=8).grid(row=len(names) + 2, column=0)
 
     def _show_frame(self, bgr) -> None:
         """Fit the overlay into the video panel and display it."""
@@ -636,6 +909,37 @@ class MotionAnalysisApp:
         image = Image.fromarray(rgb)
         self._photo = ImageTk.PhotoImage(image=image)
         self.video_label.configure(image=self._photo, text="")
+
+
+def _side_label(name: str) -> str:
+    """'L Shoulder' / 'R wrist' so the two arms are not both just 'Shoulder'."""
+    base = JOINT_LABELS.get(name, name.replace("_", " ").title())
+    if name.startswith("left_"):
+        return f"L {base}"
+    if name.startswith("right_"):
+        return f"R {base}"
+    return base
+
+
+def _deg(value: float | None) -> str:
+    """Whole degrees, or a dash when that joint was never seen."""
+    if value is None:
+        return "—"
+    return f"{value:.0f}°"
+
+
+def _dps(value: float | None) -> str:
+    """Whole degrees per second."""
+    if value is None:
+        return "—"
+    return f"{value:.0f} °/s"
+
+
+def _mps(value: float | None) -> str:
+    """Metres per second, two decimals."""
+    if value is None:
+        return "—"
+    return f"{value:.2f} m/s"
 
 
 def _bgr_to_hex(color) -> str:

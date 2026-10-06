@@ -1,4 +1,4 @@
-"""Step 5 — 2D motion analysis: joint angles (degrees) + wrist trail (pixels).
+"""Step 5 — 2D motion analysis: joint angles (degrees) in the camera image.
 
 How to run (from the project folder):
     python step5_analyze_2d.py
@@ -24,8 +24,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.analysis.angles_2d import compute_configured_angles
-from src.analysis.draw_analysis import draw_angles_2d, draw_joint_coords_2d, draw_trail_2d
-from src.analysis.trajectory_2d import trail_from_config
+from src.analysis.draw_analysis import draw_angles_2d, draw_joint_coords_2d
 from src.capture.factory import create_rgb_source
 from src.capture.video_file import VideoFileRGB
 from src.io.save_angles import AngleCsvWriter
@@ -37,7 +36,7 @@ from src.utils.config_loader import load_config, resolve_project_path
 
 
 def main() -> None:
-    """Pose + 2D angles + trail, then save CSVs like Step 4."""
+    """Pose + 2D angles, then save CSVs like Step 4."""
     config = load_config()
     display_cfg = config["display"]
     pose_cfg = config["pose"]
@@ -72,13 +71,11 @@ def main() -> None:
         min_detection_confidence=float(pose_cfg["min_detection_confidence"]),
         min_tracking_confidence=float(pose_cfg["min_tracking_confidence"]),
     )
-    trail = trail_from_config(analysis_cfg)
     point_color = _bgr(overlay_cfg["point_color_bgr"])
     line_color = _bgr(overlay_cfg["line_color_bgr"])
     angle_color = _bgr(analysis_cfg["angle_text_bgr"])
-    trail_color = _bgr(analysis_cfg["trail_color_bgr"])
 
-    print("Starting Step 5 (2D angles + path)...")
+    print("Starting Step 5 (2D angles)...")
     print(f"  Source: {source.label}")
     print(f"  Output: {run_dir}")
     print("  Angles are 2D (image plane). Face the camera.")
@@ -112,8 +109,6 @@ def main() -> None:
                 analysis_cfg["angles"],
                 min_confidence=min_ang,
             )
-            trail.update(keypoints, time_sec, min_confidence=min_ang)
-
             if csv_writer is not None:
                 csv_writer.write_frame(frame_index, time_sec, keypoints, source.label)
             angle_writer.write_frame(frame_index, time_sec, angles, source.label)
@@ -127,12 +122,6 @@ def main() -> None:
                 point_color=point_color,
                 line_color=line_color,
             )
-            draw_trail_2d(
-                canvas,
-                trail.polyline(),
-                trail_color,
-                int(analysis_cfg["trail_thickness"]),
-            )
             draw_angles_2d(canvas, angles, angle_color)
             draw_joint_coords_2d(
                 canvas,
@@ -140,7 +129,7 @@ def main() -> None:
                 list(analysis_cfg.get("highlight_joints", [])),
                 min_ang,
             )
-            _draw_hud(canvas, source.label, angles, trail.last_speed_px_s, quit_key)
+            _draw_hud(canvas, source.label, angles, quit_key)
             if video_writer is not None:
                 video_writer.write(canvas)
             cv2.imshow(window_title, canvas)
@@ -171,15 +160,13 @@ def main() -> None:
             print(f"  Keypoints: {csv_writer.row_count}  ->  {csv_writer.path}")
 
 
-def _draw_hud(frame, source_label, angles, speed_px_s, quit_key) -> None:
-    """Top line: source, live angle list, optional wrist speed in px/s."""
+def _draw_hud(frame, source_label, angles, quit_key) -> None:
+    """Top line: source and the live angle list."""
     bits = [source_label]
     if angles:
         bits.append("  ".join(f"{a.name} {a.degrees:.0f}deg" for a in angles))
     else:
         bits.append("no 2D angles (low conf. or no person)")
-    if speed_px_s is not None:
-        bits.append(f"{speed_px_s:.0f} px/s")
     bits.append(f"{quit_key}=quit")
     cv2.putText(
         frame,
@@ -207,7 +194,6 @@ def _write_run_json(path: Path, config: dict, source_label: str, frames: int, an
         "step": 5,
         "coord_frame": "camera_2d_pixel",
         "units_angle": "degrees_2d_image_plane",
-        "units_speed": "pixels_per_second",
         "source_label": source_label,
         "frames": frames,
         "angle_rows": angle_rows,

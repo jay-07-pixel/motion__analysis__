@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import cv2
 import numpy as np
+import pyrealsense2 as rs
 
 from src.analysis.angles_2d import Angle2D
+from src.geometry.joint_frame import JointFrame
 from src.pose.keypoints import Keypoint2D
 
 
@@ -155,6 +157,73 @@ def highlight_readout(
             lines = [f"u={int(round(kp.u_px))}   v={int(round(kp.v_px))}"]
         rows.append({"name": name, "label": label, "lines": lines, "color_bgr": color})
     return rows
+
+
+def draw_joint_frames(
+    canvas: np.ndarray,
+    frames: list[JointFrame],
+    intrinsics,
+    axis_length_m: float,
+    colors_bgr: dict,
+    allowed_names: set[str] | None = None,
+) -> None:
+    """Draw the three axes of each joint frame on the colour image.
+
+    Each axis is a short line in metres, projected back with the colour
+    camera intrinsics. No numbers are written on the video.
+    """
+    if intrinsics is None or axis_length_m <= 0:
+        return
+    axis_colors = (
+        ("axis_u", colors_bgr.get("u", [0, 220, 255])),
+        ("axis_v", colors_bgr.get("v", [80, 255, 120])),
+        ("axis_w", colors_bgr.get("w", [255, 80, 255])),
+    )
+    height, width = canvas.shape[:2]
+    for joint in frames:
+        # Frame name matches the joint (left_shoulder, ...). Hide it when
+        # this region is not drawing that joint.
+        if allowed_names is not None and joint.name not in allowed_names:
+            continue
+        start = _project(intrinsics, joint.origin)
+        if start is None:
+            continue
+        su, sv = start
+        if not _on_image(su, sv, width, height):
+            continue
+        for attr, color in axis_colors:
+            axis = getattr(joint, attr)
+            end = (
+                joint.origin[0] + axis[0] * axis_length_m,
+                joint.origin[1] + axis[1] * axis_length_m,
+                joint.origin[2] + axis[2] * axis_length_m,
+            )
+            tip = _project(intrinsics, end)
+            if tip is None:
+                continue
+            cv2.line(
+                canvas,
+                (int(round(su)), int(round(sv))),
+                (int(round(tip[0])), int(round(tip[1]))),
+                (int(color[0]), int(color[1]), int(color[2])),
+                2,
+                cv2.LINE_AA,
+            )
+
+
+def _project(intrinsics, point: tuple[float, float, float]) -> tuple[float, float] | None:
+    """Camera metres -> colour pixels. None if the point is behind the camera."""
+    if point[2] <= 1e-4:
+        return None
+    try:
+        pixel = rs.rs2_project_point_to_pixel(intrinsics, [float(point[0]), float(point[1]), float(point[2])])
+    except Exception:
+        return None
+    return float(pixel[0]), float(pixel[1])
+
+
+def _on_image(u: float, v: float, width: int, height: int) -> bool:
+    return 0 <= u < width and 0 <= v < height
 
 
 def _xyz_overlay_lines(kp: Keypoint2D, display_unit: str) -> list[str]:
