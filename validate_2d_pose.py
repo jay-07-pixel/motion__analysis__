@@ -23,43 +23,19 @@ import numpy as np
 PROJECT_ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from src.analysis.angles_2d import angle_at_vertex_deg
+from src.analysis.pose_metrics_2d import (
+    ANGLE_SPECS,
+    IMPORTANT,
+    image_plane_angles,
+    torso_midpoints,
+    tracking_status,
+    valid,
+)
 from src.capture.live_realsense import LiveRealSenseRGB
 from src.pose.extractor_2d import PoseExtractor2D
 from src.pose.keypoints import Keypoint2D
 from src.pose.skeleton import LANDMARK_NAMES
 from src.utils.config_loader import load_config
-
-# Joints the presenter needs to see by name. Index is the MediaPipe id.
-IMPORTANT = (
-    "nose",
-    "left_shoulder",
-    "right_shoulder",
-    "left_elbow",
-    "right_elbow",
-    "left_wrist",
-    "right_wrist",
-    "left_hip",
-    "right_hip",
-    "left_knee",
-    "right_knee",
-    "left_ankle",
-    "right_ankle",
-    "left_heel",
-    "right_heel",
-    "left_foot_index",
-    "right_foot_index",
-)
-
-# Image-plane angles. Vertex is the middle name. Not 3D biomechanical DOFs.
-ANGLE_SPECS = (
-    ("left elbow", "left_shoulder", "left_elbow", "left_wrist"),
-    ("right elbow", "right_shoulder", "right_elbow", "right_wrist"),
-    ("left knee", "left_hip", "left_knee", "left_ankle"),
-    ("right knee", "right_hip", "right_knee", "right_ankle"),
-    ("left shoulder", "left_hip", "left_shoulder", "left_elbow"),
-    ("right shoulder", "right_hip", "right_shoulder", "right_elbow"),
-)
 
 # Both sides must be present for that row of the exit summary.
 SUMMARY_PAIRS = (
@@ -171,32 +147,6 @@ def main() -> None:
         print_summary(stats, elapsed)
 
 
-def valid(by_name: dict[str, Keypoint2D], name: str, min_confidence: float) -> bool:
-    kp = by_name.get(name)
-    return kp is not None and kp.confidence >= min_confidence
-
-
-def tracking_status(by_name: dict[str, Keypoint2D], min_confidence: float) -> str:
-    if not by_name:
-        return "POOR"
-    if all(valid(by_name, name, min_confidence) for name in IMPORTANT):
-        return "GOOD"
-    return "POOR"
-
-
-def image_plane_angles(
-    by_name: dict[str, Keypoint2D], min_confidence: float
-) -> dict[str, float | None]:
-    angles: dict[str, float | None] = {}
-    for label, a_name, b_name, c_name in ANGLE_SPECS:
-        if not all(valid(by_name, name, min_confidence) for name in (a_name, b_name, c_name)):
-            angles[label] = None
-            continue
-        a, b, c = by_name[a_name], by_name[b_name], by_name[c_name]
-        angles[label] = angle_at_vertex_deg((a.u_px, a.v_px), (b.u_px, b.v_px), (c.u_px, c.v_px))
-    return angles
-
-
 def movement_indicators(
     by_name: dict[str, Keypoint2D],
     angles: dict[str, float | None],
@@ -257,13 +207,10 @@ def lean_text(
     upright_torso_px: list[float],
     status: str,
 ) -> str:
-    needed = ("left_shoulder", "right_shoulder", "left_hip", "right_hip")
-    if not all(valid(by_name, name, min_confidence) for name in needed):
+    mids = torso_midpoints(by_name, min_confidence)
+    if mids is None:
         return "lean: n/a"
-    shoulder_u = 0.5 * (by_name["left_shoulder"].u_px + by_name["right_shoulder"].u_px)
-    shoulder_v = 0.5 * (by_name["left_shoulder"].v_px + by_name["right_shoulder"].v_px)
-    hip_u = 0.5 * (by_name["left_hip"].u_px + by_name["right_hip"].u_px)
-    hip_v = 0.5 * (by_name["left_hip"].v_px + by_name["right_hip"].v_px)
+    (shoulder_u, shoulder_v), (hip_u, hip_v) = mids
     shoulder_width = abs(by_name["left_shoulder"].u_px - by_name["right_shoulder"].u_px)
     torso_px = hip_v - shoulder_v
     if status == "GOOD" and torso_px > 40 and len(upright_torso_px) < 30:

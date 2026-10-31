@@ -11,6 +11,7 @@ Close RealSense Viewer before Live.
 from __future__ import annotations
 
 import copy
+import queue
 import sys
 import threading
 import tkinter as tk
@@ -26,6 +27,9 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from src.analysis.regions import apply_region, region_id
 from src.ui.live_charts import JOINT_LABELS, MotionDashboard
+from src.ui.live_markers import LiveMarkerWindow
+from src.ui.pose2sim_playback import Pose2SimPlaybackWindow
+from src.pose2sim_live.participant import ParticipantError, parse_ui_height_cm, parse_ui_mass_kg
 from src.ui.session import MotionSession2D
 from src.ui.theme import PAL, use_night
 from src.utils.config_loader import load_config, resolve_project_path
@@ -53,6 +57,16 @@ class MotionAnalysisApp:
         self._latest_readout: list[dict] = []
         self._latest_time = 0.0
         self._latest_index = -1
+        self._latest_keypoints = []
+        self._latest_fps = 0.0
+        self._latest_space = "2d"
+        self._latest_min_vis = 0.5
+        self._latest_lstm_estimates = []
+        self._session_events: queue.Queue = queue.Queue()
+        self._native_wh = (1280, 720)
+        self._drawn_wh = (1280, 720)
+        self._marker_window: LiveMarkerWindow | None = None
+        self._p2s_window: Pose2SimPlaybackWindow | None = None
         self._chart_index = -1
         self._want_summary = False
         self._report: tk.Toplevel | None = None
@@ -61,6 +75,10 @@ class MotionAnalysisApp:
         self._photo = None
         self._running = False
         self._error_dialog_shown = False
+        self._diag_recording = False
+        self._diag_wanted = False
+        self._diag_from_worker = ""
+        self._live_cfg: dict | None = None
 
         self.mode_var = tk.StringVar(value=str(self.config["source"]["mode"]))
         self.region_var = tk.StringVar(value=region_id(self.config))
@@ -69,6 +87,11 @@ class MotionAnalysisApp:
         )
         self.path_var = tk.StringVar(value=str(self.config["source"]["file_path"]))
         self.save_var = tk.BooleanVar(value=True)
+        self.lstm_var = tk.BooleanVar(value=True)
+        self.height_cm_var = tk.StringVar(value="")
+        self.mass_kg_var = tk.StringVar(value="")
+        display_cfg = self.config.get("display") or {}
+        self.foot_safety_v = tk.IntVar(value=int(display_cfg.get("foot_safety_line_v_px", 640)))
         self.status_var = tk.StringVar(value="Idle  ·  close RealSense Viewer before Live")
         self.badge_var = tk.StringVar(value="IDLE")
         self.meta_var = tk.StringVar(value="")
@@ -187,6 +210,17 @@ class MotionAnalysisApp:
             cursor="hand2",
         )
         self.file_btn.pack(side=tk.LEFT, padx=(0, 6))
+        self.p2s_btn = tk.Button(
+            bar,
+            text="  Pose2Sim playback  ",
+            command=self._open_pose2sim_playback,
+            bd=0,
+            padx=12,
+            pady=8,
+            font=("Segoe UI", 10, "bold"),
+            cursor="hand2",
+        )
+        self.p2s_btn.pack(side=tk.LEFT, padx=(0, 6))
         self._browse_btn = tk.Button(
             bar,
             text=" Browse ",
@@ -231,8 +265,10 @@ class MotionAnalysisApp:
             btn.pack(side=tk.LEFT, padx=(0, 6))
             self._region_btns[key] = btn
 
+        run_col = tk.Frame(bar, bg=PAL.bg)
+        run_col.pack(side=tk.RIGHT, padx=(12, 0))
         self.save_check = tk.Checkbutton(
-            bar,
+            run_col,
             text="Save CSV + video",
             variable=self.save_var,
             bg=PAL.bg,
@@ -241,38 +277,125 @@ class MotionAnalysisApp:
             activebackground=PAL.bg,
             activeforeground=PAL.text,
             font=("Segoe UI", 10),
+            anchor="w",
         )
-        self.save_check.pack(side=tk.LEFT, padx=8)
-
-        self.stop_btn = tk.Button(
-            bar,
-            text="  Stop  ",
-            command=self._on_stop,
-            bg=PAL.idle,
-            fg=PAL.text,
-            bd=0,
-            padx=16,
-            pady=8,
-            font=("Segoe UI", 10, "bold"),
-            state=tk.DISABLED,
-            cursor="hand2",
+        self.save_check.pack(anchor="w")
+        anthro = tk.Frame(run_col, bg=PAL.bg)
+        anthro.pack(fill=tk.X, pady=(6, 0))
+        self._anthro_frame = anthro
+        self._height_label = tk.Label(
+            anthro,
+            text="Height (cm)",
+            bg=PAL.bg,
+            fg=PAL.muted,
+            font=("Segoe UI", 9),
+            anchor="w",
         )
-        self.stop_btn.pack(side=tk.RIGHT, padx=(6, 0))
-        self.start_btn = tk.Button(
-            bar,
+        self._height_label.grid(row=0, column=0, sticky="w")
+        self._height_entry = tk.Entry(
+            anthro,
+            textvariable=self.height_cm_var,
+            width=7,
+            font=("Segoe UI", 9),
+        )
+        self._height_entry.grid(row=0, column=1, sticky="e", padx=(8, 0))
+        self._mass_label = tk.Label(
+            anthro,
+            text="Weight (kg)",
+            bg=PAL.bg,
+            fg=PAL.muted,
+            font=("Segoe UI", 9),
+            anchor="w",
+        )
+        self._mass_label.grid(row=1, column=0, sticky="w", pady=(4, 0))
+        self._mass_entry = tk.Entry(
+            anthro,
+            textvariable=self.mass_kg_var,
+            width=7,
+            font=("Segoe UI", 9),
+        )
+        self._mass_entry.grid(row=1, column=1, sticky="e", padx=(8, 0), pady=(4, 0))
+        anthro.grid_columnconfigure(0, weight=1)
+        self.run_btn = tk.Button(
+            run_col,
             text="  Start  ",
-            command=self._on_start,
+            command=self._on_run_toggle,
             bg=PAL.start,
             fg="white",
             bd=0,
-            padx=18,
+            padx=28,
             pady=8,
             font=("Segoe UI", 10, "bold"),
             cursor="hand2",
             activebackground="#26855a",
             activeforeground="white",
         )
-        self.start_btn.pack(side=tk.RIGHT)
+        self.run_btn.pack(fill=tk.X, pady=(6, 0))
+        self.start_btn = self.run_btn
+        self.stop_btn = self.run_btn
+        self.diag_btn = tk.Button(
+            run_col,
+            text="  Start Diagnostics  ",
+            command=self._on_diag_toggle,
+            bg=PAL.card,
+            fg=PAL.text,
+            bd=0,
+            padx=12,
+            pady=8,
+            font=("Segoe UI", 10, "bold"),
+            cursor="hand2",
+            activebackground=PAL.line,
+            activeforeground=PAL.text,
+        )
+        self.diag_btn.pack(fill=tk.X, pady=(6, 0))
+        foot_row = tk.Frame(run_col, bg=PAL.bg)
+        foot_row.pack(fill=tk.X, pady=(6, 0))
+        self._foot_safety_row = foot_row
+        self._foot_safety_label = tk.Label(
+            foot_row,
+            text="Foot safety v",
+            bg=PAL.bg,
+            fg=PAL.muted,
+            font=("Segoe UI", 9),
+            anchor="w",
+        )
+        self._foot_safety_label.pack(side=tk.LEFT)
+        self._foot_safety_spin = tk.Spinbox(
+            foot_row,
+            from_=0,
+            to=719,
+            width=5,
+            textvariable=self.foot_safety_v,
+            font=("Segoe UI", 9),
+            command=self._sync_foot_safety_v,
+        )
+        self._foot_safety_spin.pack(side=tk.RIGHT)
+        self.foot_safety_v.trace_add("write", lambda *_: self._sync_foot_safety_v())
+        self.lstm_check = tk.Checkbutton(
+            bar,
+            text="Live Pose2Sim",
+            variable=self.lstm_var,
+            bg=PAL.bg,
+            fg=PAL.text,
+            selectcolor=PAL.card,
+            activebackground=PAL.bg,
+            activeforeground=PAL.text,
+            font=("Segoe UI", 10),
+        )
+        self.lstm_check.pack(side=tk.RIGHT, padx=8)
+        self.toe_btn = tk.Button(
+            bar,
+            text="  Calibrate toes  ",
+            command=self._on_calibrate_toes,
+            bg=PAL.card,
+            fg=PAL.text,
+            bd=0,
+            padx=10,
+            pady=8,
+            font=("Segoe UI", 10, "bold"),
+            cursor="hand2",
+        )
+        self.toe_btn.pack(side=tk.RIGHT, padx=8)
 
     def _set_space(self, space: str) -> None:
         """Switch 2D pixels vs 3D camera metres. Locked while running."""
@@ -410,6 +533,12 @@ class MotionAnalysisApp:
             activebackground=PAL.line,
             activeforeground=PAL.text,
         )
+        self.p2s_btn.configure(
+            bg=PAL.idle,
+            fg=PAL.text,
+            activebackground=PAL.line,
+            activeforeground=PAL.text,
+        )
         self.save_check.configure(
             bg=PAL.bg,
             fg=PAL.text,
@@ -417,6 +546,18 @@ class MotionAnalysisApp:
             activebackground=PAL.bg,
             activeforeground=PAL.text,
         )
+        self.lstm_check.configure(
+            bg=PAL.bg,
+            fg=PAL.text,
+            selectcolor=PAL.card,
+            activebackground=PAL.bg,
+            activeforeground=PAL.text,
+        )
+        self._foot_safety_row.configure(bg=PAL.bg)
+        self._foot_safety_label.configure(bg=PAL.bg, fg=PAL.muted)
+        self._anthro_frame.configure(bg=PAL.bg)
+        self._height_label.configure(bg=PAL.bg, fg=PAL.muted)
+        self._mass_label.configure(bg=PAL.bg, fg=PAL.muted)
         self._video_frame.configure(bg=PAL.video, highlightbackground=PAL.line)
         self.video_label.configure(bg=PAL.video, fg=PAL.muted)
         try:
@@ -479,6 +620,7 @@ class MotionAnalysisApp:
             font=("Segoe UI", 12),
         )
         self.video_label.pack(fill=tk.BOTH, expand=True)
+        self.video_label.bind("<Button-1>", self._on_video_click)
 
         self._dash_host = tk.Frame(body, bg=PAL.bg)
         self._dash_host.grid(row=0, column=1, sticky="nsew", padx=(8, 0))
@@ -526,6 +668,61 @@ class MotionAnalysisApp:
             activebackground=PAL.accent if not live else PAL.line,
             activeforeground="white" if not live else PAL.text,
         )
+        self.p2s_btn.configure(
+            bg=PAL.idle,
+            fg=PAL.text,
+            activebackground=PAL.line,
+            activeforeground=PAL.text,
+        )
+
+    def _open_pose2sim_playback(self) -> None:
+        """Replay recorded Pose2Sim estimates. Not live camera inference."""
+        if self._p2s_window is not None:
+            try:
+                if self._p2s_window.win.winfo_exists():
+                    self._p2s_window.win.lift()
+                    return
+            except Exception:
+                pass
+        try:
+            self._p2s_window = Pose2SimPlaybackWindow(self.root)
+        except FileNotFoundError as error:
+            messagebox.showerror("Pose2Sim playback", f"Missing recording or estimate file:\n{error}")
+        except Exception as error:
+            messagebox.showerror("Pose2Sim playback", str(error))
+
+    def _on_calibrate_toes(self) -> None:
+        """Start the four-click live toe capture for the lower LSTM."""
+        if not self._running:
+            messagebox.showinfo(
+                "Calibrate toes",
+                "Start a 3D live session first.\n\n"
+                "Then step closer so both feet are in view and click:\n"
+                "1. Left big toe\n2. Left small toe\n3. Right big toe\n4. Right small toe\n\n"
+                "Clicks use RealSense depth. MediaPipe foot_index is not used as a toe.",
+            )
+            return
+        self.status_var.set("Calibrate toes: click LEFT big toe on the video")
+
+    def _on_video_click(self, event) -> None:
+        """Map a click on the displayed overlay back to native colour pixels."""
+        if not self._running:
+            return
+        native_w, native_h = self._native_wh
+        drawn_w, drawn_h = self._drawn_wh
+        if drawn_w < 1 or drawn_h < 1:
+            return
+        label_w = max(1, self.video_label.winfo_width())
+        label_h = max(1, self.video_label.winfo_height())
+        origin_x = (label_w - drawn_w) // 2
+        origin_y = (label_h - drawn_h) // 2
+        x = event.x - origin_x
+        y = event.y - origin_y
+        if x < 0 or y < 0 or x >= drawn_w or y >= drawn_h:
+            return
+        u = x * native_w / drawn_w
+        v = y * native_h / drawn_h
+        self._session_events.put({"kind": "toe_click", "u": float(u), "v": float(v)})
 
     def _browse(self) -> None:
         """Pick an mp4/avi/mov/bag. Switches source to file."""
@@ -541,10 +738,79 @@ class MotionAnalysisApp:
             self._set_mode("file")
             self.status_var.set(f"File ready  ·  {Path(path).name}")
 
+    def _on_diag_toggle(self) -> None:
+        """Start/stop diagnostic CSV for the live camera without changing DOF."""
+        if self._diag_recording:
+            if self._running:
+                self._session_events.put({"kind": "diag_stop"})
+            self._diag_recording = False
+            self._set_diag_button(False)
+            self.status_var.set("Diagnostics stopping…")
+            return
+        if self.space_var.get() != "3d":
+            self._set_space("3d")
+        self._diag_recording = True
+        self._set_diag_button(True)
+        if self._running:
+            self._session_events.put({"kind": "diag_start"})
+            self.status_var.set("Diagnostics recording…")
+            return
+        self._diag_wanted = True
+        self._on_start()
+
+    def _set_diag_button(self, recording: bool) -> None:
+        if recording:
+            self.diag_btn.configure(
+                text="  Stop Diagnostics  ",
+                bg=PAL.stop,
+                fg="white",
+                activebackground="#a83a3a",
+                activeforeground="white",
+            )
+        else:
+            self.diag_btn.configure(
+                text="  Start Diagnostics  ",
+                bg=PAL.card,
+                fg=PAL.text,
+                activebackground=PAL.line,
+                activeforeground=PAL.text,
+            )
+
+    def _sync_foot_safety_v(self) -> None:
+        """Copy the foot-safety row into config. Preview-only; no landmark change."""
+        try:
+            v = int(self.foot_safety_v.get())
+        except (tk.TclError, ValueError, TypeError):
+            return
+        v = max(0, min(719, v))
+        self.config.setdefault("display", {})["foot_safety_line_v_px"] = v
+        if self._live_cfg is not None:
+            self._live_cfg.setdefault("display", {})["foot_safety_line_v_px"] = v
+
+    def _on_run_toggle(self) -> None:
+        """One button: Start while idle, Stop while running."""
+        if self._running:
+            self._on_stop()
+        else:
+            self._on_start()
+
     def _on_start(self) -> None:
         """Start the worker. Live needs the D455f free (Viewer closed)."""
         if self._running:
             return
+        if bool(self.lstm_var.get()):
+            try:
+                height_m = parse_ui_height_cm(self.height_cm_var.get())
+                mass_kg = parse_ui_mass_kg(self.mass_kg_var.get())
+            except ParticipantError as error:
+                messagebox.showerror("Participant measurements", str(error))
+                return
+        else:
+            height_m = None
+            mass_kg = None
+        if bool(self.lstm_var.get()) and self.space_var.get() != "3d":
+            self._set_space("3d")
+            self.status_var.set("Live Pose2Sim needs 3D depth — switched to 3D")
         if self.space_var.get() == "3d" and self.mode_var.get() == "file":
             suffix = Path(self.path_var.get().strip()).suffix.lower()
             if suffix != ".bag":
@@ -565,6 +831,21 @@ class MotionAnalysisApp:
         cfg["source"]["file_path"] = self.path_var.get()
         apply_region(cfg, self.region_var.get())
         cfg["analysis"]["space"] = self.space_var.get()
+        cfg["analysis"]["live_pose2sim_upper"] = bool(self.lstm_var.get())
+        cfg.setdefault("project", {})
+        if height_m is not None and mass_kg is not None:
+            cfg["project"]["participant_height_m"] = height_m
+            cfg["project"]["participant_mass_kg"] = mass_kg
+        else:
+            cfg["project"].pop("participant_height_m", None)
+            cfg["project"].pop("participant_mass_kg", None)
+        cfg.setdefault("display", {})["foot_safety_line_v_px"] = int(self.foot_safety_v.get())
+        self._live_cfg = cfg
+        cfg["analysis"]["live_diagnostics"] = bool(self._diag_wanted or self._diag_recording)
+        if cfg["analysis"]["live_diagnostics"]:
+            self._diag_recording = True
+            self._set_diag_button(True)
+        self._diag_wanted = False
         self._stop_flag.clear()
         self._running = True
         self._error_dialog_shown = False
@@ -577,6 +858,12 @@ class MotionAnalysisApp:
             self._latest_readout = []
             self._latest_time = 0.0
             self._latest_index = -1
+            self._latest_keypoints = []
+            self._latest_lstm_estimates = []
+            self._latest_fps = 0.0
+            self._latest_space = self.space_var.get()
+            self._latest_min_vis = float((self.config.get("pose") or {}).get("min_visibility", 0.5))
+        self._open_marker_window()
         self._chart_index = -1
         self._want_summary = True
         self.dashboard.on_start()
@@ -595,19 +882,41 @@ class MotionAnalysisApp:
         self.badge_var.set("STOPPING")
 
     def _set_running_buttons(self, running: bool) -> None:
-        """Enable Start or Stop, not both."""
+        """The same button is Start (green) or Stop (red)."""
         if running:
-            self.start_btn.configure(state=tk.DISABLED, bg=PAL.idle)
-            self.stop_btn.configure(state=tk.NORMAL, bg=PAL.stop, fg="white")
+            self.run_btn.configure(
+                text="  Stop  ",
+                bg=PAL.stop,
+                fg="white",
+                activebackground="#a83a3a",
+                activeforeground="white",
+                state=tk.NORMAL,
+            )
         else:
-            self.start_btn.configure(state=tk.NORMAL, bg=PAL.start, fg="white")
-            self.stop_btn.configure(state=tk.DISABLED, bg=PAL.idle, fg=PAL.text)
+            self.run_btn.configure(
+                text="  Start  ",
+                bg=PAL.start,
+                fg="white",
+                activebackground="#26855a",
+                activeforeground="white",
+                state=tk.NORMAL,
+            )
         self._refresh_region_buttons()
         self._refresh_space_buttons()
+        state = tk.DISABLED if running else tk.NORMAL
+        self._height_entry.configure(state=state)
+        self._mass_entry.configure(state=state)
 
     def _run_session(self, cfg: dict) -> None:
         """Worker thread: MediaPipe + save. Do not touch Tk widgets here."""
-        session = MotionSession2D(cfg, save_files=bool(self.save_var.get()))
+        while True:
+            try:
+                self._session_events.get_nowait()
+            except queue.Empty:
+                break
+        session = MotionSession2D(
+            cfg, save_files=bool(self.save_var.get()), events=self._session_events
+        )
         try:
             session.start()
             label = session.source.label if session.source is not None else "source"
@@ -631,6 +940,13 @@ class MotionAnalysisApp:
                     ]
                     self._latest_time = session.last_time_sec
                     self._latest_index = session.frame_index
+                    self._latest_keypoints = list(session.last_keypoints)
+                    self._latest_lstm_estimates = list(session.last_lstm_estimates)
+                    self._latest_fps = float(session.last_fps)
+                    self._latest_space = str((cfg.get("analysis") or {}).get("space", "2d"))
+                    self._latest_min_vis = float((cfg.get("pose") or {}).get("min_visibility", 0.5))
+                if session.last_diag_status:
+                    self._diag_from_worker = session.last_diag_status
         except Exception as error:
             self._status_from_worker = f"Error: {_friendly_start_error(error)}"
         finally:
@@ -641,6 +957,9 @@ class MotionAnalysisApp:
             extra = ""
             if summary.get("run_dir"):
                 extra = f"  ·  saved {summary['run_dir']}"
+            if summary.get("diag_dir"):
+                extra += f"  ·  diagnostics {summary['diag_dir']}"
+            self._diag_recording = False
             prefix = self._status_from_worker or ""
             if prefix.startswith("Error:"):
                 self._want_summary = False
@@ -663,6 +982,8 @@ class MotionAnalysisApp:
                 messagebox.showerror(title, self._status_from_worker.replace("Error: ", "", 1))
             if not self._running:
                 self._set_running_buttons(False)
+                self._set_diag_button(False)
+                self._diag_recording = False
                 if not self._status_from_worker.startswith("Error:"):
                     self.badge_var.set("SUMMARY")
                     self._paint_badge("idle")
@@ -679,6 +1000,8 @@ class MotionAnalysisApp:
                             "space": self.dashboard.space,
                         }
                     )
+        if self._running and self._diag_from_worker:
+            self.status_var.set(self._diag_from_worker)
         with self._frame_lock:
             frame = None if self._latest_bgr is None else self._latest_bgr.copy()
             angles = dict(self._latest_angles)
@@ -686,6 +1009,11 @@ class MotionAnalysisApp:
             linear = dict(self._latest_linear)
             readout = [dict(row) for row in self._latest_readout]
             frame_index = self._latest_index
+            keypoints = list(self._latest_keypoints)
+            estimates = list(self._latest_lstm_estimates)
+            fps = self._latest_fps
+            space = self._latest_space
+            min_vis = self._latest_min_vis
         self._show_readout(readout)
         if self._running:
             self.badge_var.set("LIVE" if self.mode_var.get() == "live" else "FILE")
@@ -695,13 +1023,27 @@ class MotionAnalysisApp:
             self.dashboard.on_frame(angles, angular, linear)
         if frame is not None:
             self._show_frame(frame)
+        if self._running and self._marker_window is not None and self._marker_window.alive():
+            self._marker_window.update(keypoints, min_vis, fps, space, estimates=estimates)
         if not self._running and self._worker is not None and not self._worker.is_alive():
             self._set_running_buttons(False)
         self.root.after(30, self._tick)
 
+    def _open_marker_window(self) -> None:
+        """3D inventory window. Same keypoints as the live RGB overlay."""
+        if self._marker_window is not None and self._marker_window.alive():
+            try:
+                self._marker_window.win.lift()
+            except Exception:
+                pass
+            return
+        self._marker_window = LiveMarkerWindow(self.root)
+
     def _on_close(self) -> None:
         """Stop the camera thread, then close the window."""
         self._stop_flag.set()
+        if self._marker_window is not None and self._marker_window.alive():
+            self._marker_window._on_close()
         if self._worker is not None and self._worker.is_alive():
             self._worker.join(timeout=2.0)
         self.root.destroy()
@@ -896,6 +1238,7 @@ class MotionAnalysisApp:
     def _show_frame(self, bgr) -> None:
         """Fit the overlay into the video panel and display it."""
         h, w = bgr.shape[:2]
+        self._native_wh = (w, h)
         avail_w = max(320, self.video_label.winfo_width() or 960)
         avail_h = max(240, self.video_label.winfo_height() or 540)
         if avail_w < 50 or avail_h < 50:
@@ -903,6 +1246,7 @@ class MotionAnalysisApp:
         scale = min(avail_w / w, avail_h / h)
         new_w = max(1, int(w * scale))
         new_h = max(1, int(h * scale))
+        self._drawn_wh = (new_w, new_h)
         if new_w != w or new_h != h:
             bgr = cv2.resize(bgr, (new_w, new_h))
         rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)

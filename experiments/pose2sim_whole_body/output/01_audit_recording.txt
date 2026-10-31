@@ -1,0 +1,97 @@
+CSV: C:\Projects\motion__analysis__\data\output\20261005-150538\keypoints_2d.csv
+Rows: 25214
+Columns: frame, time_sec, joint, u_px, v_px, x_m, y_m, z_m, confidence, coord_frame, source
+Frames: 464 (index 0 .. 463)
+Time_sec: 0.8712 .. 39.1054 (span 38.2342 s)
+Detected frame rate (median dt): 12.285012285011963 fps
+Detected frame rate (span): 12.109577289442436 fps
+Sources: {'live': 25214}
+coord_frame counts: {'camera_3d_metre': 25190, 'camera_2d_pixel': 24}
+
+This file is not a whole-body landmark set. Knees, ankles, heels and foot_index are absent. That matches an upper-body-plus-hands CSV filter, not proof that MediaPipe failed to see the legs.
+
+MediaPipe Pose 33 present:
+  nose, left_eye, right_eye, left_ear, right_ear, mouth_left, mouth_right, left_shoulder, right_shoulder, left_elbow, right_elbow, left_wrist, right_wrist, left_pinky, right_pinky, left_index, right_index, left_thumb, right_thumb, left_hip, right_hip
+MediaPipe Pose 33 absent:
+  left_eye_inner, left_eye_outer, right_eye_inner, right_eye_outer, left_knee, right_knee, left_ankle, right_ankle, left_heel, right_heel, left_foot_index, right_foot_index
+Extra landmarks (Hands etc.):
+  left_index_dip, left_index_mcp, left_index_pip, left_middle_dip, left_middle_mcp, left_middle_pip, left_middle_tip, left_pinky_dip, left_pinky_mcp, left_pinky_pip, left_ring_dip, left_ring_mcp, left_ring_pip, left_ring_tip, left_thumb_cmc, left_thumb_ip, left_thumb_mcp, right_index_dip, right_index_mcp, right_index_pip, right_middle_dip, right_middle_mcp, right_middle_pip, right_middle_tip, right_pinky_dip, right_pinky_mcp, right_pinky_pip, right_ring_dip, right_ring_mcp, right_ring_pip, right_ring_tip, right_thumb_cmc, right_thumb_ip, right_thumb_mcp
+
+Regions:
+  head_face: present=['nose', 'left_eye', 'right_eye', 'left_ear', 'right_ear', 'mouth_left', 'mouth_right'] absent=['left_eye_inner', 'left_eye_outer', 'right_eye_inner', 'right_eye_outer']
+  torso: present=['left_shoulder', 'right_shoulder', 'left_hip', 'right_hip'] absent=[]
+  arms: present=['left_elbow', 'right_elbow', 'left_wrist', 'right_wrist', 'left_pinky', 'right_pinky', 'left_index', 'right_index', 'left_thumb', 'right_thumb'] absent=[]
+  hands_extra: present=['left_index_dip', 'left_index_mcp', 'left_index_pip', 'left_middle_dip', 'left_middle_mcp', 'left_middle_pip', 'left_middle_tip', 'left_pinky_dip', 'left_pinky_mcp', 'left_pinky_pip', 'left_ring_dip', 'left_ring_mcp', 'left_ring_pip', 'left_ring_tip', 'left_thumb_cmc', 'left_thumb_ip', 'left_thumb_mcp', 'right_index_dip', 'right_index_mcp', 'right_index_pip', 'right_middle_dip', 'right_middle_mcp', 'right_middle_pip', 'right_middle_tip', 'right_pinky_dip', 'right_pinky_mcp', 'right_pinky_pip', 'right_ring_dip', 'right_ring_mcp', 'right_ring_pip', 'right_ring_tip', 'right_thumb_cmc', 'right_thumb_ip', 'right_thumb_mcp'] absent=[]
+  legs: present=[] absent=['left_knee', 'right_knee']
+  feet: present=[] absent=['left_ankle', 'right_ankle', 'left_heel', 'right_heel', 'left_foot_index', 'right_foot_index']
+
+Per-joint valid camera XYZ / frames absent / conf median:
+  left_ear: xyz=464 absent_rows=0 invalid_xyz=0 conf_median=1.0 halpe=LEar
+  left_elbow: xyz=464 absent_rows=0 invalid_xyz=0 conf_median=0.9987 halpe=LElbow
+  left_eye: xyz=464 absent_rows=0 invalid_xyz=0 conf_median=1.0 halpe=LEye
+  left_hip: xyz=464 absent_rows=0 invalid_xyz=0 conf_median=0.97975 halpe=LHip
+  left_index: xyz=464 absent_rows=0 invalid_xyz=0 conf_median=0.9968 halpe=none
+  left_index_dip: xyz=464 absent_rows=0 invalid_xyz=0 conf_median=0.9968 halpe=none
+  left_index_mcp: xyz=464 absent_rows=0 invalid_xyz=0 conf_median=0.9968 halpe=none
+  left_index_pip: xyz=464 absent_rows=0 invalid_xyz=0 conf_median=0.9968 halpe=none
+  left_middle_dip: xyz=464 absent_rows=0 invalid_xyz=0 conf_median=0.9968 halpe=none
+  left_middle_mcp: xyz=464 absent_rows=0 invalid_xyz=0 conf_median=0.9968 halpe=none
+  left_middle_pip: xyz=464 absent_rows=0 invalid_xyz=0 conf_median=0.9968 halpe=none
+  left_middle_tip: xyz=464 absent_rows=0 invalid_xyz=0 conf_median=0.9968 halpe=none
+  left_pinky: xyz=464 absent_rows=0 invalid_xyz=0 conf_median=0.9968 halpe=none
+  left_pinky_dip: xyz=464 absent_rows=0 invalid_xyz=0 conf_median=0.9968 halpe=none
+  left_pinky_mcp: xyz=464 absent_rows=0 invalid_xyz=0 conf_median=0.9968 halpe=none
+  left_pinky_pip: xyz=464 absent_rows=0 invalid_xyz=0 conf_median=0.9968 halpe=none
+  left_ring_dip: xyz=464 absent_rows=0 invalid_xyz=0 conf_median=0.9968 halpe=none
+  left_ring_mcp: xyz=464 absent_rows=0 invalid_xyz=0 conf_median=0.9968 halpe=none
+  left_ring_pip: xyz=464 absent_rows=0 invalid_xyz=0 conf_median=0.9968 halpe=none
+  left_ring_tip: xyz=464 absent_rows=0 invalid_xyz=0 conf_median=0.9968 halpe=none
+  left_shoulder: xyz=464 absent_rows=0 invalid_xyz=0 conf_median=1.0 halpe=LShoulder
+  left_thumb: xyz=464 absent_rows=0 invalid_xyz=0 conf_median=0.9968 halpe=none
+  left_thumb_cmc: xyz=464 absent_rows=0 invalid_xyz=0 conf_median=0.9968 halpe=none
+  left_thumb_ip: xyz=464 absent_rows=0 invalid_xyz=0 conf_median=0.9968 halpe=none
+  left_thumb_mcp: xyz=464 absent_rows=0 invalid_xyz=0 conf_median=0.9968 halpe=none
+  left_wrist: xyz=464 absent_rows=0 invalid_xyz=0 conf_median=0.9968 halpe=LWrist
+  mouth_left: xyz=464 absent_rows=0 invalid_xyz=0 conf_median=1.0 halpe=none
+  mouth_right: xyz=464 absent_rows=0 invalid_xyz=0 conf_median=1.0 halpe=none
+  nose: xyz=464 absent_rows=0 invalid_xyz=0 conf_median=1.0 halpe=Nose
+  right_ear: xyz=464 absent_rows=0 invalid_xyz=0 conf_median=1.0 halpe=REar
+  right_elbow: xyz=464 absent_rows=0 invalid_xyz=0 conf_median=0.9983 halpe=RElbow
+  right_eye: xyz=443 absent_rows=0 invalid_xyz=21 conf_median=1.0 halpe=REye
+  right_hip: xyz=464 absent_rows=0 invalid_xyz=0 conf_median=0.981 halpe=RHip
+  right_index: xyz=464 absent_rows=0 invalid_xyz=0 conf_median=0.95465 halpe=none
+  right_index_dip: xyz=446 absent_rows=18 invalid_xyz=18 conf_median=0.9545 halpe=none
+  right_index_mcp: xyz=446 absent_rows=18 invalid_xyz=18 conf_median=0.9545 halpe=none
+  right_index_pip: xyz=446 absent_rows=18 invalid_xyz=18 conf_median=0.9545 halpe=none
+  right_middle_dip: xyz=446 absent_rows=18 invalid_xyz=18 conf_median=0.9545 halpe=none
+  right_middle_mcp: xyz=446 absent_rows=18 invalid_xyz=18 conf_median=0.9545 halpe=none
+  right_middle_pip: xyz=446 absent_rows=18 invalid_xyz=18 conf_median=0.9545 halpe=none
+  right_middle_tip: xyz=446 absent_rows=18 invalid_xyz=18 conf_median=0.9545 halpe=none
+  right_pinky: xyz=464 absent_rows=0 invalid_xyz=0 conf_median=0.9541999999999999 halpe=none
+  right_pinky_dip: xyz=446 absent_rows=18 invalid_xyz=18 conf_median=0.9545 halpe=none
+  right_pinky_mcp: xyz=446 absent_rows=18 invalid_xyz=18 conf_median=0.9545 halpe=none
+  right_pinky_pip: xyz=446 absent_rows=18 invalid_xyz=18 conf_median=0.9545 halpe=none
+  right_ring_dip: xyz=446 absent_rows=18 invalid_xyz=18 conf_median=0.9545 halpe=none
+  right_ring_mcp: xyz=446 absent_rows=18 invalid_xyz=18 conf_median=0.9545 halpe=none
+  right_ring_pip: xyz=446 absent_rows=18 invalid_xyz=18 conf_median=0.9545 halpe=none
+  right_ring_tip: xyz=446 absent_rows=18 invalid_xyz=18 conf_median=0.9545 halpe=none
+  right_shoulder: xyz=464 absent_rows=0 invalid_xyz=0 conf_median=0.9996 halpe=RShoulder
+  right_thumb: xyz=464 absent_rows=0 invalid_xyz=0 conf_median=0.95585 halpe=none
+  right_thumb_cmc: xyz=445 absent_rows=18 invalid_xyz=19 conf_median=0.9545 halpe=none
+  right_thumb_ip: xyz=446 absent_rows=18 invalid_xyz=18 conf_median=0.9545 halpe=none
+  right_thumb_mcp: xyz=444 absent_rows=18 invalid_xyz=20 conf_median=0.9545 halpe=none
+  right_wrist: xyz=464 absent_rows=0 invalid_xyz=0 conf_median=0.95955 halpe=RWrist
+
+Segment lengths in camera metres (only when both ends have XYZ):
+  shoulder_width: n=464 median_m=0.3495581268371547 min_m=0.3398355484642535 max_m=0.35493854397627767 stdev_m=0.003028877611409109 missing_joint=0 invalid_xyz=0
+  hip_width: n=464 median_m=0.1837650129921362 min_m=0.17515724364124935 max_m=0.1893819685186528 stdev_m=0.004031534357194732 missing_joint=0 invalid_xyz=0
+  left_upper_arm: n=464 median_m=0.24229768880449518 min_m=0.23649038035404313 max_m=0.24901720824071577 stdev_m=0.0025900295706371714 missing_joint=0 invalid_xyz=0
+  right_upper_arm: n=464 median_m=0.27906248375260323 min_m=0.26149281060862833 max_m=0.2986216000225034 stdev_m=0.009844641076427175 missing_joint=0 invalid_xyz=0
+  left_forearm: n=464 median_m=0.27711118707118276 min_m=0.2715906662608272 max_m=0.29280192963845036 stdev_m=0.00575598057982311 missing_joint=0 invalid_xyz=0
+  right_forearm: n=464 median_m=0.27962018882763096 min_m=0.26648367679841106 max_m=0.3599210607897237 stdev_m=0.023524127808849108 missing_joint=0 invalid_xyz=0
+  left_thigh: n=0 median_m=None min_m=None max_m=None stdev_m=None missing_joint=464 invalid_xyz=0
+  right_thigh: n=0 median_m=None min_m=None max_m=None stdev_m=None missing_joint=464 invalid_xyz=0
+  left_shank: n=0 median_m=None min_m=None max_m=None stdev_m=None missing_joint=464 invalid_xyz=0
+  right_shank: n=0 median_m=None min_m=None max_m=None stdev_m=None missing_joint=464 invalid_xyz=0
+
+Not applied. Stanford 47-marker augmenter stays off.

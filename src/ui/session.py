@@ -7,6 +7,7 @@ the window code does not duplicate Step 5.
 from __future__ import annotations
 
 import json
+import queue
 import time
 from datetime import datetime
 from pathlib import Path
@@ -21,6 +22,7 @@ from src.analysis.draw_analysis import draw_joint_frames, highlight_readout
 from src.analysis.regions import region_id, region_label
 from src.analysis.velocity import VelocityTracker
 from src.capture.factory import create_rgb_source
+from src.diagnostics.recorder import LiveDiagnosticsRecorder
 from src.geometry.deproject import CameraXyzSmoother, attach_camera_xyz
 from src.io.save_angles import AngleCsvWriter
 from src.io.save_keypoints import KeypointCsvWriter
@@ -28,7 +30,41 @@ from src.io.save_video import OverlayVideoWriter
 from src.pose.draw import draw_keypoints_2d
 from src.pose.extractor_2d import PoseExtractor2D
 from src.pose.hands import HandsExtractor2D, merge_pose_and_hands
+from src.pose.keypoints import Keypoint2D
+from src.pose2sim_live.participant import require_participant_metres_kg
+from src.ui.foot_safety import draw_foot_safety_guide
+from src.ui.live_markers import draw_live_landmarks
 from src.utils.config_loader import resolve_project_path
+
+
+def _project_lstm_points(intrinsics, points: list[tuple[str, float, float, float]]) -> list[Keypoint2D]:
+    """Camera-metre LSTM XYZ -> Keypoint2D with projected colour pixels."""
+    import pyrealsense2 as rs
+
+    out: list[Keypoint2D] = []
+    if intrinsics is None:
+        return out
+    for name, x, y, z in points:
+        u_px, v_px = -1.0, -1.0
+        if z > 1e-4:
+            try:
+                pixel = rs.rs2_project_point_to_pixel(intrinsics, [float(x), float(y), float(z)])
+                u_px, v_px = float(pixel[0]), float(pixel[1])
+            except Exception:
+                u_px, v_px = -1.0, -1.0
+        out.append(
+            Keypoint2D(
+                name=name,
+                u_px=u_px,
+                v_px=v_px,
+                confidence=1.0,
+                coord_frame="camera_3d_metre",
+                x_m=float(x),
+                y_m=float(y),
+                z_m=float(z),
+            )
+        )
+    return out
 
 
 def bgr(values) -> tuple[int, int, int]:
@@ -54,15 +90,17 @@ def _initial_dofs(space: str, keypoints, analysis_cfg: dict, min_confidence: flo
 class MotionSession2D:
     """Open source, process frames, optionally save, then close everything."""
 
-    def __init__(self, config: dict, save_files: bool) -> None:
+    def __init__(self, config: dict, save_files: bool, events: queue.Queue | None = None) -> None:
         """Store config. Camera/file are opened in start().
 
         Args:
             config: Full YAML dict; source.mode / file_path must already be set.
             save_files: If False, only show overlay (no CSV / mp4).
+            events: UI-thread clicks (toe calibration) consumed on the worker.
         """
         self.config = config
         self.save_files = save_files
+        self.events = events
         self.source = None
         self.extractor = None
         self.hands_extractor = None
@@ -80,7 +118,18 @@ class MotionSession2D:
         self.last_highlight_readout: list[dict] = []
         self.last_joint_frames: list = []
         self.last_dof_angles = unavailable_initial_dofs("needs_3d")
+        self.last_keypoints = []
+        self.last_fps: float = 0.0
+        self._fps_stamp: float | None = None
         self._xyz_smoother: CameraXyzSmoother | None = None
+        self._lstm = None
+        self._body = None
+        self.last_lstm_estimates: list[Keypoint2D] = []
+        self.last_lstm_banner = ""
+        self.last_lstm_banners: list[str] = []
+        self._diag: LiveDiagnosticsRecorder | None = None
+        self.last_diag_dir = ""
+        self.last_diag_status = ""
 
     def start(self) -> None:
         """Open RGB source, Pose + Hands models, and output files."""
@@ -133,6 +182,40 @@ class MotionSession2D:
             )
         else:
             self._xyz_smoother = None
+        self._lstm = None
+        self._body = None
+        self.last_lstm_estimates = []
+        self.last_lstm_banner = ""
+        self.last_lstm_banners = []
+        self.participant_height_m: float | None = None
+        self.participant_mass_kg: float | None = None
+        want_lstm = bool(analysis_cfg.get("live_pose2sim_upper", False))
+        space = str(analysis_cfg.get("space", "2d")).lower()
+        if space == "3d" and want_lstm:
+            from src.markers.coordinator import LiveBodyCoordinator
+
+            project = self.config.get("project") or {}
+            height_m, mass_kg = require_participant_metres_kg(
+                project.get("participant_height_m"),
+                project.get("participant_mass_kg"),
+            )
+            self.participant_height_m = height_m
+            self.participant_mass_kg = mass_kg
+            print(
+                f"Starting live full-body marker coordinator... "
+                f"participant {height_m:.2f} m  {mass_kg:.1f} kg",
+                flush=True,
+            )
+            self._body = LiveBodyCoordinator(enabled=True, height_m=height_m, mass_kg=mass_kg)
+            self._lstm = self._body
+            self.last_lstm_banners = self._body.banners()
+            self.last_lstm_banner = self.last_lstm_banners[0] if self.last_lstm_banners else ""
+        elif want_lstm:
+            self.last_lstm_banner = "LSTM off — this session is 2D. Stop, click 3D, Start."
+            self.last_lstm_banners = [self.last_lstm_banner]
+        else:
+            self.last_lstm_banner = "Live Pose2Sim unchecked — no LSTM estimates"
+            self.last_lstm_banners = [self.last_lstm_banner]
         vel_cfg = analysis_cfg.get("velocity") or {}
         self._linear_names = [str(name) for name in vel_cfg.get("linear_joints") or []]
         self._velocity = VelocityTracker(
@@ -143,6 +226,78 @@ class MotionSession2D:
         )
         self.frame_index = 0
         self._t0 = time.perf_counter()
+        self._diag = None
+        self.last_diag_dir = ""
+        self.last_diag_status = ""
+        if bool(analysis_cfg.get("live_diagnostics", False)):
+            self._open_diag()
+
+    def _deproject_uv(self, u_px: float, v_px: float) -> tuple[float, float, float] | None:
+        """Single-pixel RealSense deprojection. None if depth is invalid."""
+        import pyrealsense2 as rs
+
+        if self.source is None:
+            return None
+        depth_cfg = (self.config.get("camera") or {}).get("depth") or {}
+        z_m = self.source.depth_distance_m(u_px, v_px, int(depth_cfg.get("sample_window", 5)))
+        min_m = float(depth_cfg.get("min_m", 0.3))
+        max_m = float(depth_cfg.get("max_m", 6.0))
+        if z_m < min_m or z_m > max_m:
+            return None
+        intrinsics = self.source.color_intrinsics()
+        if intrinsics is None:
+            return None
+        point = rs.rs2_deproject_pixel_to_point(intrinsics, [float(u_px), float(v_px)], float(z_m))
+        return float(point[0]), float(point[1]), float(point[2])
+
+    def _drain_marker_events(self, keypoints: list[Keypoint2D], min_visibility: float) -> None:
+        if self.events is None:
+            return
+        while True:
+            try:
+                event = self.events.get_nowait()
+            except queue.Empty:
+                return
+            kind = event.get("kind") if isinstance(event, dict) else None
+            if kind == "diag_start":
+                self._open_diag()
+                continue
+            if kind == "diag_stop":
+                self._close_diag()
+                continue
+            if kind == "toe_click":
+                if self._body is None:
+                    continue
+                xyz = self._deproject_uv(float(event["u"]), float(event["v"]))
+                if xyz is None:
+                    self.last_lstm_banner = "Toe click has no valid depth. Aim at the toe and click again."
+                    continue
+                self.last_lstm_banner = self._body.add_toe_click(
+                    float(event["u"]), float(event["v"]), xyz, keypoints
+                )
+
+    def _open_diag(self) -> None:
+        if self._diag is not None:
+            return
+        self._diag = LiveDiagnosticsRecorder.create_session(
+            participant_height_m=self.participant_height_m,
+            participant_mass_kg=self.participant_mass_kg,
+        )
+        self.last_diag_dir = str(self._diag.dir)
+        self.last_diag_status = f"DIAG ON  {self._diag.dir.name}"
+        print(f"Live diagnostics -> {self._diag.dir}", flush=True)
+
+    def _close_diag(self) -> dict | None:
+        if self._diag is None:
+            return None
+        summary = self._diag.close()
+        self.last_diag_dir = str(summary.get("dir") or self.last_diag_dir)
+        self.last_diag_status = (
+            f"DIAG saved {summary.get('frames', 0)} frames  {Path(self.last_diag_dir).name}"
+        )
+        print(self.last_diag_status, flush=True)
+        self._diag = None
+        return summary
 
     def process_frame(self) -> np.ndarray | None:
         """Grab one RGB frame, draw overlay, save rows. None = skip this tick.
@@ -153,10 +308,13 @@ class MotionSession2D:
         Raises:
             StopIteration: uploaded file has ended.
         """
+        t_loop = time.perf_counter()
         frame = self.source.get_frame()
         if self.source.ended:
             raise StopIteration("End of file")
         if frame is None:
+            if self._diag is not None:
+                self._diag.note_dropped()
             return None
 
         pose_cfg = self.config["pose"]
@@ -181,9 +339,17 @@ class MotionSession2D:
                 max_depth_m=float(depth_cfg.get("max_m", 6.0)),
                 sample_window=int(depth_cfg.get("sample_window", 5)),
             )
+            time_sec = time.perf_counter() - self._t0
+            self._drain_marker_events(keypoints, min_vis)
+            if self._body is not None:
+                self._body.observe(keypoints, time_sec, min_vis)
+            raw_for_diag = list(keypoints)
             if self._xyz_smoother is not None:
                 keypoints = self._xyz_smoother.apply(keypoints)
-        time_sec = time.perf_counter() - self._t0
+        else:
+            time_sec = time.perf_counter() - self._t0
+            self._drain_marker_events(keypoints, min_vis)
+            raw_for_diag = list(keypoints)
         if space == "3d":
             angles, self.last_joint_frames = compute_configured_angles_3d(
                 keypoints,
@@ -214,6 +380,30 @@ class MotionSession2D:
             self.last_linear_mps = {name: None for name in self._linear_names}
         self.last_angles = angles
         self.last_time_sec = time_sec
+        self.last_keypoints = list(keypoints)
+        now = time.perf_counter()
+        if self._fps_stamp is not None:
+            dt = now - self._fps_stamp
+            if dt > 1e-4:
+                inst = 1.0 / dt
+                self.last_fps = inst if self.last_fps <= 0 else (0.25 * inst + 0.75 * self.last_fps)
+        self._fps_stamp = now
+
+        self.last_lstm_estimates = []
+        if self._body is not None:
+            self.last_lstm_banners = self._body.banners()
+            self.last_lstm_banner = self.last_lstm_banners[0] if self.last_lstm_banners else ""
+            self.last_lstm_estimates = _project_lstm_points(
+                self.source.color_intrinsics(),
+                self._body.overlay_points(),
+            )
+        elif self.last_lstm_banner.startswith("LSTM unavailable"):
+            pass
+        elif bool(analysis_cfg.get("live_pose2sim_upper", False)) and space != "3d":
+            self.last_lstm_banner = "LSTM off — this session is 2D. Stop, click 3D, Start."
+            self.last_lstm_banners = [self.last_lstm_banner]
+        else:
+            self.last_lstm_banners = [self.last_lstm_banner] if self.last_lstm_banner else []
 
         draw_names = analysis_cfg.get("draw_joints") or None
         allowed = set(draw_names) if draw_names else None
@@ -230,7 +420,7 @@ class MotionSession2D:
         if self.angle_writer is not None:
             self.angle_writer.write_frame(self.frame_index, time_sec, angles, self.source.label)
 
-        canvas = draw_keypoints_2d(
+        save_canvas = draw_keypoints_2d(
             frame,
             keypoints,
             min_visibility=min_vis,
@@ -243,12 +433,30 @@ class MotionSession2D:
         )
         if space == "3d" and self.last_joint_frames:
             draw_joint_frames(
-                canvas,
+                save_canvas,
                 self.last_joint_frames,
                 self.source.color_intrinsics(),
                 float(analysis_cfg.get("joint_frame_axis_m", 0.12)),
                 dict(analysis_cfg.get("joint_frame_colors_bgr") or {}),
                 allowed_names=allowed,
+            )
+        canvas = draw_live_landmarks(
+            frame,
+            keypoints,
+            min_visibility=min_vis,
+            fps=self.last_fps,
+            space=space,
+            estimates=self.last_lstm_estimates,
+            banner=self.last_lstm_banner or None,
+            banners=self.last_lstm_banners,
+        )
+        display_cfg = self.config.get("display") or {}
+        if bool(display_cfg.get("foot_safety_line_enabled", True)):
+            draw_foot_safety_guide(
+                canvas,
+                keypoints,
+                min_vis,
+                float(display_cfg.get("foot_safety_line_v_px", 640)),
             )
         highlight_specs = list(analysis_cfg.get("highlight_joints", []))
         display_unit = str(analysis_cfg.get("coord_3d_display", "cm"))
@@ -259,15 +467,51 @@ class MotionSession2D:
             space=space,
             display_unit=display_unit,
         )
-        _draw_hud(canvas, self.source.label, region_label(self.config), space)
+        _draw_hud(save_canvas, self.source.label, region_label(self.config), space)
+
+        if self._diag is not None:
+            predicted = []
+            if self._body is not None:
+                for rec in self._body.overlay_records():
+                    item = dict(rec)
+                    done = item.get("t_pred_done_perf")
+                    item["t_pred_done_sec"] = (float(done) - self._t0) if done is not None else None
+                    predicted.append(item)
+            self.last_lstm_banners = [f"DIAG ON  {self._diag.dir.name}"] + [
+                b for b in self.last_lstm_banners if not str(b).startswith("DIAG ON")
+            ]
+            depth_cfg = (self.config.get("camera") or {}).get("depth") or {}
+            sample_window = int(depth_cfg.get("sample_window", 5))
+            depth_inspect = {
+                kp.name: self.source.inspect_depth_sample(kp.u_px, kp.v_px, sample_window)
+                for kp in raw_for_diag
+            }
+            self._diag.write_frame(
+                self.frame_index,
+                time_sec,
+                (time.perf_counter() - t_loop) * 1000.0,
+                self.last_fps,
+                raw_for_diag,
+                predicted,
+                depth_inspect=depth_inspect,
+            )
+            self.last_diag_status = f"DIAG {self._diag.n_frames} frames  {self._diag.dir.name}"
 
         if self.video_writer is not None:
-            self.video_writer.write(canvas)
+            self.video_writer.write(save_canvas)
         self.frame_index += 1
         return canvas
 
     def stop(self) -> dict:
         """Close camera/file and writers. Returns paths and counts for the UI."""
+        self._close_diag()
+        if self._body is not None:
+            try:
+                self._body.close()
+            except Exception:
+                pass
+            self._body = None
+            self._lstm = None
         if self.extractor is not None:
             try:
                 self.extractor.close()
@@ -311,6 +555,7 @@ class MotionSession2D:
             "frames": self.frame_index,
             "angle_rows": angle_rows,
             "keypoint_rows": key_rows,
+            "diag_dir": self.last_diag_dir,
         }
 
 
@@ -340,6 +585,8 @@ def _write_run_json(path: Path, config: dict, frames: int, angle_rows: int) -> N
         "angle_rows": angle_rows,
         "source": config.get("source", {}),
         "analysis": config.get("analysis", {}),
+        "participant_height_m": (config.get("project") or {}).get("participant_height_m"),
+        "participant_mass_kg": (config.get("project") or {}).get("participant_mass_kg"),
     }
     path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
 

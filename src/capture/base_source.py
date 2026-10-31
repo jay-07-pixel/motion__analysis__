@@ -49,3 +49,9 @@ class RGBSource(ABC):
     def depth_distance_m(self, u_px: float, v_px: float, window: int = 1) -> float:
         """Aligned depth in metres at a colour pixel, or 0 if no depth."""
         return 0.0
+
+    def inspect_depth_sample(self, u_px: float, v_px: float, window: int = 1):
+        """Diagnostic depth window stats, or unavailable fields when no depth."""
+        from src.capture.depth_util import DepthSampleInspect
+
+        return DepthSampleInspect(in_image=None, n_valid=None, depth_sample_m=None)

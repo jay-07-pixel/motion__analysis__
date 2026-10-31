@@ -16,6 +16,23 @@ Desktop.ini
 data/output/*
 !data/output/.gitkeep
 data/cache/
+data/diagnostics/
+data/experiments/
+
+# Session logs and downloaded wheels
+*.log
+*.whl
+
+# Experiment artefacts (keep scripts and notes; not videos or CSVs)
+experiments/**/*.png
+experiments/**/*.csv
+experiments/**/*.gif
+experiments/**/*.mp4
+experiments/**/*.h5
+experiments/**/*.trc
+experiments/**/*.npy
+experiments/**/*.html
+experiments/**/*.json
 
 # Secrets (none used in Step 1; keep the habit)
 .env

@@ -80,6 +80,43 @@ HAND_SKELETON_BONES: tuple[tuple[str, str], ...] = _bones_for_side("left") + _bo
     "right"
 )
 
+# MediaPipe Hands bone pairs as landmark indices 0..20 (same order as HAND_STEMS).
+HAND_BONE_INDICES: tuple[tuple[int, int], ...] = tuple(
+    (HAND_STEMS.index(start), HAND_STEMS.index(end))
+    for chain in _HAND_CHAINS
+    for start, end in zip(chain, chain[1:])
+)
+
+
+def serialize_hands_2d(hand_keypoints: list[Keypoint2D] | None) -> dict[str, list[dict] | None]:
+    """Game payload: 21 Hands points per side, or None if that hand is incomplete.
+
+    Names are HAND_STEMS (MediaPipe Hands). Left/right are the person's own sides,
+    already assigned by HandsExtractor2D. Missing or partial hands are None, never
+    invented coordinates.
+    """
+    by_name = {kp.name: kp for kp in hand_keypoints or []}
+    payload: dict[str, list[dict] | None] = {}
+    for side in ("left", "right"):
+        points: list[dict] = []
+        complete = True
+        for index, stem in enumerate(HAND_STEMS):
+            kp = by_name.get(hand_joint_name(side, stem))
+            if kp is None:
+                complete = False
+                break
+            points.append(
+                {
+                    "index": index,
+                    "name": stem,
+                    "u_px": kp.u_px,
+                    "v_px": kp.v_px,
+                    "confidence": kp.confidence,
+                }
+            )
+        payload[side] = points if complete else None
+    return payload
+
 # Pose draws a straight wrist→tip line. Skip those when the full finger exists.
 POSE_SIMPLE_HAND_BONES: frozenset[tuple[str, str]] = frozenset(
     {

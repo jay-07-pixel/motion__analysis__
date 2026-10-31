@@ -13,7 +13,7 @@ import numpy as np
 import pyrealsense2 as rs
 
 from src.capture.base_source import RGBSource
-from src.capture.depth_util import color_intrinsics_from_profile, median_depth_m
+from src.capture.depth_util import color_intrinsics_from_profile, inspect_depth_sample as inspect_aligned_depth, median_depth_m
 
 
 class LiveRealSenseRGB(RGBSource):
@@ -137,6 +137,10 @@ class LiveRealSenseRGB(RGBSource):
     def depth_distance_m(self, u_px: float, v_px: float, window: int = 1) -> float:
         """Median aligned depth in metres around a colour pixel."""
         return median_depth_m(self._depth_frame, u_px, v_px, window)
+
+    def inspect_depth_sample(self, u_px: float, v_px: float, window: int = 1):
+        """Diagnostic depth window stats for the aligned frame (no XYZ change)."""
+        return inspect_aligned_depth(self._depth_frame, u_px, v_px, window)
 
     def stop(self) -> None:
         """Release the camera so Viewer or another script can use it."""
