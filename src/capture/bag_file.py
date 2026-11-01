@@ -24,7 +24,12 @@ import numpy as np
 import pyrealsense2 as rs
 
 from src.capture.base_source import RGBSource
-from src.capture.depth_util import color_intrinsics_from_profile, inspect_depth_sample as inspect_aligned_depth, median_depth_m
+from src.capture.depth_util import (
+    collect_depth_samples,
+    color_intrinsics_from_profile,
+    inspect_depth_sample as inspect_aligned_depth,
+    median_depth_m,
+)
 
 
 class BagFileRGB(RGBSource):
@@ -136,6 +141,11 @@ class BagFileRGB(RGBSource):
     def color_intrinsics(self):
         """Colour intrinsics from the bag, or None if not started."""
         return self._intrinsics
+
+    def depth_samples(self, u_px: float, v_px: float, window: int = 1) -> list[float]:
+        """Valid aligned depths in the window. Empty means the pixel has no depth."""
+        _in_image, samples = collect_depth_samples(self._depth_frame, u_px, v_px, window)
+        return samples
 
     def depth_distance_m(self, u_px: float, v_px: float, window: int = 1) -> float:
         """Median aligned depth in metres around a colour pixel."""

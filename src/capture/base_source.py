@@ -50,6 +50,10 @@ class RGBSource(ABC):
         """Aligned depth in metres at a colour pixel, or 0 if no depth."""
         return 0.0
 
+    def depth_samples(self, u_px: float, v_px: float, window: int = 1) -> list[float]:
+        """Valid depths in the sample window. Empty means no measurement."""
+        return []
+
     def inspect_depth_sample(self, u_px: float, v_px: float, window: int = 1):
         """Diagnostic depth window stats, or unavailable fields when no depth."""
         from src.capture.depth_util import DepthSampleInspect

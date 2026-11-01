@@ -59,12 +59,23 @@ camera:
     max_m: 6.0
     # Median of this many pixels around the joint (odd number).
     sample_window: 5
-    # Calm a still joint. 1 = raw depth (jumpy), 0.35 = blend with the last point.
-    smooth: 0.35
-    # Moves smaller than this (metres) stay put. 0.008 m = 0.8 cm.
-    deadband_m: 0.008
-    # If depth blinks off, keep the last camera point for this many frames.
-    hold_frames: 5
+    # A 5x5 window has 25 pixels. Fewer than this is a hole, not a joint depth.
+    min_valid_pixels: 13
+    # Samples farther apart than this are a silhouette edge, not one surface.
+    max_spread_m: 0.15
+    # Reject a depth jump larger than this when the pixel barely moved.
+    max_step_m: 0.35
+    fast_motion_px: 80
+    # Elbow or wrist this much farther from the same-side shoulder is not used.
+    max_torso_gap_m: 0.75
+    # Optional filter. Raw XYZ stays on the measurement. Filtered XYZ is separate.
+    # A step of fast_m or more is copied raw so a fast arm is not lagged.
+    # Missing depth stays missing. It is not held forward as the current point.
+    filter:
+      enabled: true
+      smooth: 0.55
+      deadband_m: 0.004
+      fast_m: 0.04
 
 # MediaPipe Pose (Step 3). All thresholds live here — not in Python.
 pose:
@@ -155,6 +166,11 @@ analysis:
     enabled: true
     plane_singular_deg: 25
     elbow_sign_deadband_deg: 5
+  # LSTM diamonds use the frame that entered the network.
+  # Older than delay_ms is labeled delayed. Older than max_age_ms is not drawn.
+  lstm_sync:
+    delay_ms: 80
+    max_age_ms: 200
   # Local axes drawn in 3D only. Length is metres. Colours are BGR.
   joint_frame_axis_m: 0.12
   joint_frame_colors_bgr:
@@ -360,3 +376,5 @@ display:
   # Does not change CSV, diagnostics, depth, or saved overlay video.
   foot_safety_line_enabled: true
   foot_safety_line_v_px: 640
+  # Timing panel only. It does not change landmarks, depth, or the LSTM.
+  performance_diagnostics: true

@@ -9,11 +9,18 @@ each (u, v) to camera metres (origin = colour optical centre).
 
 from __future__ import annotations
 
+import time
+
 import numpy as np
 import pyrealsense2 as rs
 
 from src.capture.base_source import RGBSource
-from src.capture.depth_util import color_intrinsics_from_profile, inspect_depth_sample as inspect_aligned_depth, median_depth_m
+from src.capture.depth_util import (
+    collect_depth_samples,
+    color_intrinsics_from_profile,
+    inspect_depth_sample as inspect_aligned_depth,
+    median_depth_m,
+)
 
 
 class LiveRealSenseRGB(RGBSource):
@@ -53,7 +60,11 @@ class LiveRealSenseRGB(RGBSource):
         self._running = False
         self._align: rs.align | None = None
         self._depth_frame = None
+        self.device_name = ""
         self._intrinsics = None
+        self.last_capture_wait_ms = 0.0
+        self.delivered_interval_ms: float | None = None
+        self._last_color_timestamp_ms: float | None = None
 
     @property
     def ended(self) -> bool:
@@ -98,6 +109,10 @@ class LiveRealSenseRGB(RGBSource):
                 self._align = rs.align(rs.stream.color)
             profile = self._pipeline.start(self._rs_config)
             self._intrinsics = color_intrinsics_from_profile(profile)
+            try:
+                self.device_name = profile.get_device().get_info(rs.camera_info.name)
+            except Exception:
+                self.device_name = "RealSense"
         except Exception as error:
             raise RuntimeError(_friendly_camera_error(error)) from error
         self._running = True
@@ -112,10 +127,12 @@ class LiveRealSenseRGB(RGBSource):
         if not self._running:
             raise RuntimeError("Camera is not started. Call start() first.")
 
+        wait_started = time.perf_counter()
         try:
             frames = self._pipeline.wait_for_frames(timeout_ms=5000)
         except Exception as error:
             raise RuntimeError(_friendly_camera_error(error)) from error
+        self.last_capture_wait_ms = (time.perf_counter() - wait_started) * 1000.0
 
         if self._align is not None:
             frames = self._align.process(frames)
@@ -128,7 +145,16 @@ class LiveRealSenseRGB(RGBSource):
             return None
         if self._intrinsics is None:
             self._intrinsics = color_frame.profile.as_video_stream_profile().get_intrinsics()
+        timestamp_ms = float(color_frame.get_timestamp())
+        if self._last_color_timestamp_ms is not None:
+            self.delivered_interval_ms = timestamp_ms - self._last_color_timestamp_ms
+        self._last_color_timestamp_ms = timestamp_ms
         return np.asanyarray(color_frame.get_data())
+
+    @property
+    def depth_streaming(self) -> bool:
+        """True after a colour frame arrived with an aligned depth frame."""
+        return self._depth_frame is not None
 
     def color_intrinsics(self):
         """Colour intrinsics (fx, fy, cx, cy) after start(), else None."""
@@ -137,6 +163,11 @@ class LiveRealSenseRGB(RGBSource):
     def depth_distance_m(self, u_px: float, v_px: float, window: int = 1) -> float:
         """Median aligned depth in metres around a colour pixel."""
         return median_depth_m(self._depth_frame, u_px, v_px, window)
+
+    def depth_samples(self, u_px: float, v_px: float, window: int = 1) -> list[float]:
+        """Valid aligned depths in the window. Empty means the pixel has no depth."""
+        _in_image, samples = collect_depth_samples(self._depth_frame, u_px, v_px, window)
+        return samples
 
     def inspect_depth_sample(self, u_px: float, v_px: float, window: int = 1):
         """Diagnostic depth window stats for the aligned frame (no XYZ change)."""
