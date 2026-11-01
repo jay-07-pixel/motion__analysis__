@@ -13,6 +13,7 @@ from pathlib import Path
 from src.capture.depth_util import DepthSampleInspect
 from src.markers.paper_set import PAPER_LANDMARKS, resolve_paper_landmarks
 from src.pose.keypoints import Keypoint2D
+from src.pose.wrist_identity import WRIST_IDENTITY_FIELDS, WristIdentityDecision
 from src.utils.config_loader import resolve_project_path
 
 FRAME_FIELDS = (
@@ -30,6 +31,15 @@ FRAME_FIELDS = (
     "infer_latency_ms",
     "pred_lag_ms",
     "fps",
+    "capture_wait_ms",
+    "pose_ms",
+    "hands_ms",
+    "pair_ms",
+    "depth_ms",
+    "lstm_prep_ms",
+    "filter_ms",
+    "draw_ms",
+    "loop_ms",
 )
 
 LANDMARK_FIELDS = (
@@ -125,6 +135,7 @@ class _LandmarkStats:
         self.last: tuple[float, float, float] | None = None
         self.disp_sum = 0.0
         self.disp_n = 0
+        self.disp_max = 0.0
 
     def add(self, xyz: tuple[float, float, float] | None) -> None:
         self.n += 1
@@ -142,8 +153,10 @@ class _LandmarkStats:
             dx = xyz[0] - self.last[0]
             dy = xyz[1] - self.last[1]
             dz = xyz[2] - self.last[2]
-            self.disp_sum += math.sqrt(dx * dx + dy * dy + dz * dz)
+            step = math.sqrt(dx * dx + dy * dy + dz * dz)
+            self.disp_sum += step
             self.disp_n += 1
+            self.disp_max = max(self.disp_max, step)
         self.last = xyz
 
     def report(self) -> dict:
@@ -157,6 +170,7 @@ class _LandmarkStats:
             out["std_m"] = {"x": None, "y": None, "z": None}
             out["range_m"] = {"x": None, "y": None, "z": None}
             out["mean_frame_to_frame_m"] = None
+            out["max_frame_to_frame_m"] = None
             return out
         n = self.n_valid
         std = []
@@ -169,6 +183,7 @@ class _LandmarkStats:
         out["std_m"] = {"x": std[0], "y": std[1], "z": std[2]}
         out["range_m"] = {"x": rng[0], "y": rng[1], "z": rng[2]}
         out["mean_frame_to_frame_m"] = (self.disp_sum / self.disp_n) if self.disp_n else None
+        out["max_frame_to_frame_m"] = self.disp_max if self.disp_n else None
         return out
 
 
@@ -180,6 +195,7 @@ class LiveDiagnosticsRecorder:
         folder: Path,
         participant_height_m: float | None = None,
         participant_mass_kg: float | None = None,
+        filter_settings: dict | None = None,
     ) -> None:
         folder.mkdir(parents=True, exist_ok=True)
         self.dir = folder
@@ -187,8 +203,10 @@ class LiveDiagnosticsRecorder:
         self.n_dropped = 0
         self.participant_height_m = participant_height_m
         self.participant_mass_kg = participant_mass_kg
+        self.filter_settings = dict(filter_settings or {})
         self._closed = False
         self._process_ms: list[float] = []
+        self._stage_ms: dict[str, list[float]] = defaultdict(list)
         self._stats: dict[str, _LandmarkStats] = defaultdict(_LandmarkStats)
         self._class: dict[str, str] = {}
         self._t_start_unix = time.time()
@@ -209,6 +227,12 @@ class LiveDiagnosticsRecorder:
         self.landmarks_path = marks_path
         self.paper_path = paper_path
         self._paper_present: dict[str, int] = defaultdict(int)
+        self._wrist_counts: dict[str, int] = defaultdict(int)
+        identity_path = folder / "wrist_identity.csv"
+        self._identity_file = identity_path.open("w", encoding="utf-8", newline="")
+        self._identity = csv.DictWriter(self._identity_file, fieldnames=list(WRIST_IDENTITY_FIELDS))
+        self._identity.writeheader()
+        self.wrist_identity_path = identity_path
 
     @classmethod
     def create_session(
@@ -216,6 +240,7 @@ class LiveDiagnosticsRecorder:
         root: str = "data/diagnostics",
         participant_height_m: float | None = None,
         participant_mass_kg: float | None = None,
+        filter_settings: dict | None = None,
     ) -> "LiveDiagnosticsRecorder":
         stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
         folder = resolve_project_path(root) / stamp
@@ -227,6 +252,7 @@ class LiveDiagnosticsRecorder:
             folder,
             participant_height_m=participant_height_m,
             participant_mass_kg=participant_mass_kg,
+            filter_settings=filter_settings,
         )
 
     def note_dropped(self) -> None:
@@ -243,6 +269,7 @@ class LiveDiagnosticsRecorder:
         observed: list[Keypoint2D],
         predicted: list[dict],
         depth_inspect: dict[str, DepthSampleInspect] | None = None,
+        stage_ms: dict | None = None,
     ) -> None:
         """Append one frames.csv row plus one landmarks.csv row per landmark.
 
@@ -275,9 +302,9 @@ class LiveDiagnosticsRecorder:
                     "raw_x_m": _fmt(xyz[0] if xyz else None),
                     "raw_y_m": _fmt(xyz[1] if xyz else None),
                     "raw_z_m": _fmt(xyz[2] if xyz else None),
-                    "filt_x_m": "",
-                    "filt_y_m": "",
-                    "filt_z_m": "",
+                    "filt_x_m": _fmt(kp.filt_x_m),
+                    "filt_y_m": _fmt(kp.filt_y_m),
+                    "filt_z_m": _fmt(kp.filt_z_m),
                     "visibility": _fmt(kp.confidence, 4),
                     "u_px": u_txt,
                     "v_px": v_txt,
@@ -366,8 +393,22 @@ class LiveDiagnosticsRecorder:
                 "infer_latency_ms": _fmt(infer_ms, 3),
                 "pred_lag_ms": _fmt(lag_frame, 3),
                 "fps": _fmt(fps, 3),
+                "capture_wait_ms": _fmt(None if stage_ms is None else stage_ms.get("capture_wait"), 3),
+                "pose_ms": _fmt(None if stage_ms is None else stage_ms.get("pose"), 3),
+                "hands_ms": _fmt(None if stage_ms is None else stage_ms.get("hands"), 3),
+                "pair_ms": _fmt(None if stage_ms is None else stage_ms.get("pair"), 3),
+                "depth_ms": _fmt(None if stage_ms is None else stage_ms.get("depth"), 3),
+                "lstm_prep_ms": _fmt(None if stage_ms is None else stage_ms.get("lstm_prep"), 3),
+                "filter_ms": _fmt(None if stage_ms is None else stage_ms.get("filter"), 3),
+                "draw_ms": _fmt(None if stage_ms is None else stage_ms.get("draw"), 3),
+                "loop_ms": _fmt(None if stage_ms is None else stage_ms.get("loop"), 3),
             }
         )
+        if stage_ms:
+            for key in ("capture_wait", "pose", "hands", "pair", "depth", "lstm_prep", "filter", "draw", "loop"):
+                value = stage_ms.get(key)
+                if value is not None and math.isfinite(float(value)):
+                    self._stage_ms[key].append(float(value))
         source_xyz: dict[str, tuple[float, float, float]] = {}
         for kp in observed:
             if _xyz_ok(kp.x_m, kp.y_m, kp.z_m):
@@ -396,7 +437,28 @@ class LiveDiagnosticsRecorder:
                 }
             )
         self._process_ms.append(float(process_ms))
+        self._stage_ms["process"].append(float(process_ms))
+        if infer_ms is not None:
+            self._stage_ms["lstm_infer"].append(float(infer_ms))
+        if lag_frame is not None:
+            self._stage_ms["prediction_age"].append(float(lag_frame))
         self.n_frames += 1
+
+    def write_wrist_identity(
+        self,
+        frame_index: int,
+        t_frame_sec: float,
+        decision: WristIdentityDecision,
+    ) -> None:
+        """Record raw Hands detections and the overwrite decision for one frame.
+
+        Accepted landmarks stay in landmarks.csv. This file keeps the raw
+        MediaPipe detections, including the ones whose overwrite was rejected.
+        """
+        if self._closed:
+            return
+        self._identity.writerow(decision.to_csv_row(frame_index, t_frame_sec))
+        self._wrist_counts[decision.classification] += 1
 
     def close(self) -> dict:
         if self._closed:
@@ -406,12 +468,14 @@ class LiveDiagnosticsRecorder:
             self._frames_file.flush()
             self._marks_file.flush()
             self._paper_file.flush()
+            self._identity_file.flush()
         except Exception:
             pass
         try:
             self._frames_file.close()
             self._marks_file.close()
             self._paper_file.close()
+            self._identity_file.close()
         except Exception:
             pass
         summary = self._build_summary()
@@ -430,7 +494,9 @@ class LiveDiagnosticsRecorder:
         return {
             "coord_frame": "camera_3d_metre",
             "units": "metres",
-            "filtered": False,
+            "filtered": bool(self.filter_settings.get("enabled")),
+            "filter": dict(self.filter_settings),
+            "stage_ms": {name: _duration_stats(values) for name, values in sorted(self._stage_ms.items())},
             "t_start_utc": self._t_start_wall,
             "t_end_utc": datetime.now(timezone.utc).isoformat(),
             "dir": str(self.dir),
@@ -442,6 +508,7 @@ class LiveDiagnosticsRecorder:
             "mean_process_ms": mean_ms,
             "participant_height_m": self.participant_height_m,
             "participant_mass_kg": self.participant_mass_kg,
+            "wrist_identity": dict(self._wrist_counts),
             "paper_set": {
                 spec.paper_name: {
                     "side": spec.side,
@@ -462,7 +529,11 @@ def _summary_text(summary: dict) -> str:
         "Live marker diagnostics",
         f"folder: {summary['dir']}",
         f"units: {summary['units']}  coord_frame: {summary['coord_frame']}",
-        "filtered coordinates: not recorded (filter not implemented)",
+        (
+            "filtered coordinates: recorded separately from raw"
+            if summary.get("filtered")
+            else "filtered coordinates: filter off"
+        ),
         f"frames: {summary['frames']}   dropped: {summary['dropped_frames']}",
         (
             f"participant: {summary['participant_height_m']:.2f} m  "
@@ -504,5 +575,38 @@ def _summary_text(summary: dict) -> str:
             f"{_fmt(rng.get('x'), 5):>8s}  {_fmt(f2f, 5):>8s}"
         )
     lines.append("")
-    lines.append("Empty filtered_* columns are intentional. Missing XYZ is blank, not 0.")
+    if summary.get("filter"):
+        lines.append(f"filter settings: {json.dumps(summary['filter'], sort_keys=True)}")
+    lines.append("stage durations (ms):")
+    for name, row in (summary.get("stage_ms") or {}).items():
+        lines.append(
+            f"  {name:16s}  n={row['n']}  mean={row['mean']:.2f}  median={row['median']:.2f}  "
+            f"p90={row['p90']:.2f}  p95={row['p95']:.2f}"
+        )
+    lines.append("Missing XYZ is blank, not 0. A rejected depth is not replaced by the previous point.")
     return "\n".join(lines) + "\n"
+
+
+def _duration_stats(values: list[float]) -> dict:
+    ordered = sorted(float(value) for value in values)
+    if not ordered:
+        return {"n": 0, "mean": None, "median": None, "p90": None, "p95": None}
+
+    def pick(percent: float) -> float:
+        if len(ordered) == 1:
+            return ordered[0]
+        pos = (percent / 100.0) * (len(ordered) - 1)
+        low = int(math.floor(pos))
+        high = int(math.ceil(pos))
+        if low == high:
+            return ordered[low]
+        weight = pos - low
+        return ordered[low] * (1.0 - weight) + ordered[high] * weight
+
+    return {
+        "n": len(ordered),
+        "mean": sum(ordered) / len(ordered),
+        "median": pick(50),
+        "p90": pick(90),
+        "p95": pick(95),
+    }
