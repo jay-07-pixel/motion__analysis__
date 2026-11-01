@@ -31,7 +31,6 @@ _INVALID_RING = (40, 40, 220)
 _ESTIMATE = (180, 0, 255)
 _CALIBRATED = (0, 255, 180)
 _CENTRE = (80, 220, 255)
-_FOCUS_RING = (255, 255, 255)
 
 # Observed 3D joints the live view should emphasise. Not paper SAT / epicondyles.
 _FOCUS_OBSERVED = frozenset(
@@ -194,24 +193,12 @@ def draw_live_landmarks(
             continue
         colour = _bgr_for(kp.name)
         centre = (int(round(kp.u_px)), int(round(kp.v_px)))
-        focus = kp.name in _FOCUS_OBSERVED
+        radius = 4 if kp.name in _FOCUS_OBSERVED else 3
         if has_camera_xyz(kp):
-            radius = 9 if focus else 5
             cv2.circle(canvas, centre, radius, colour, thickness=-1, lineType=cv2.LINE_AA)
-            if focus:
-                cv2.circle(canvas, centre, radius + 3, _FOCUS_RING, thickness=2, lineType=cv2.LINE_AA)
-                cv2.drawMarker(
-                    canvas,
-                    centre,
-                    colour,
-                    markerType=cv2.MARKER_DIAMOND,
-                    markerSize=22,
-                    thickness=2,
-                    line_type=cv2.LINE_AA,
-                )
         else:
-            cv2.circle(canvas, centre, 6, _INVALID_RING, thickness=2, lineType=cv2.LINE_AA)
-            cv2.circle(canvas, centre, 3, colour, thickness=-1, lineType=cv2.LINE_AA)
+            cv2.circle(canvas, centre, radius, _INVALID_RING, thickness=1, lineType=cv2.LINE_AA)
+            cv2.circle(canvas, centre, max(1, radius // 2), colour, thickness=-1, lineType=cv2.LINE_AA)
 
     h, w = canvas.shape[:2]
     for kp in estimates or []:
@@ -219,18 +206,19 @@ def draw_live_landmarks(
         if u < 0 or v < 0 or u >= w or v >= h:
             continue
         if kp.name in TOE_INPUTS:
-            colour, marker, size = _CALIBRATED, cv2.MARKER_SQUARE, 18
+            colour, marker = _CALIBRATED, cv2.MARKER_SQUARE
         elif kp.name in GEOMETRIC_CENTRES:
-            colour, marker, size = _CENTRE, cv2.MARKER_TILTED_CROSS, 16
+            colour, marker = _CENTRE, cv2.MARKER_TILTED_CROSS
         else:
-            colour, marker, size = _ESTIMATE, cv2.MARKER_DIAMOND, 20
-        cv2.circle(canvas, (u, v), 6, colour, thickness=-1, lineType=cv2.LINE_AA)
+            colour, marker = _ESTIMATE, cv2.MARKER_DIAMOND
+        cv2.circle(canvas, (u, v), 8, (255, 255, 255), thickness=2, lineType=cv2.LINE_AA)
+        cv2.circle(canvas, (u, v), 5, colour, thickness=-1, lineType=cv2.LINE_AA)
         cv2.drawMarker(
             canvas,
             (u, v),
             (255, 255, 255),
             markerType=marker,
-            markerSize=size,
+            markerSize=18,
             thickness=2,
             line_type=cv2.LINE_AA,
         )
@@ -381,7 +369,7 @@ class LiveMarkerWindow:
                 colours.append("#e67e22")
             else:
                 colours.append("#f1c40f")
-            sizes.append(90 if kp.name in _FOCUS_OBSERVED else 28)
+            sizes.append(36 if kp.name in _FOCUS_OBSERVED else 16)
         ax.scatter(xs, ys, zs, c=colours, s=sizes, picker=6, depthshade=False)
         est = [kp for kp in (estimates or []) if has_camera_xyz(kp)]
         if est:
@@ -398,7 +386,7 @@ class LiveMarkerWindow:
                 [kp.y_m for kp in est],
                 [kp.z_m for kp in est],
                 c=est_colours,
-                s=48,
+                s=120,
                 marker="D",
                 depthshade=False,
             )

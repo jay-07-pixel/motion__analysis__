@@ -107,3 +107,39 @@ def compute_configured_angles(
             )
         )
     return results
+
+
+def fill_missing_from_picture(
+    keypoints: list[Keypoint2D],
+    angle_specs: list[dict],
+    measured: dict[str, float | None],
+    min_confidence: float,
+) -> dict[str, float | None]:
+    """Dial values only. A measured angle is kept.
+
+    When that angle is missing, the picture angle is used if the three dots
+    are visible. This dict must not replace the saved angle series.
+    """
+    specs = {str(spec.get("name", "")): spec for spec in angle_specs}
+    by_name = {kp.name: kp for kp in keypoints}
+    shown: dict[str, float | None] = {}
+    for name, value in measured.items():
+        if value is not None:
+            shown[name] = float(value)
+            continue
+        spec = specs.get(name) or {}
+        points = spec.get("points") or []
+        if len(points) != 3:
+            shown[name] = None
+            continue
+        joints = [by_name.get(str(item)) for item in points]
+        if any(joint is None or joint.confidence < min_confidence for joint in joints):
+            shown[name] = None
+            continue
+        first, vertex, last = joints
+        shown[name] = angle_at_vertex_deg(
+            (first.u_px, first.v_px),
+            (vertex.u_px, vertex.v_px),
+            (last.u_px, last.v_px),
+        )
+    return shown

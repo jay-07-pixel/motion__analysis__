@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import math
 import statistics
+import time
 import tkinter as tk
 
 from src.ui.theme import PAL
@@ -332,24 +333,32 @@ class BodyGauges(tk.Frame):
         max_deg: float,
         accent: str,
         step_deg: float = 45,
+        horizontal: bool = False,
+        title_prefix: str = "",
     ) -> None:
         """heading is 'Left' / 'Right'. joint_names from YAML."""
         super().__init__(parent, bg=PAL.panel, highlightbackground=PAL.line, highlightthickness=1)
+        span = max(len(joint_names), 1) if horizontal else 1
         tk.Label(
             self,
             text=heading.upper(),
             bg=PAL.panel,
             fg=accent,
             font=("Segoe UI", 11, "bold"),
-        ).grid(row=0, column=0, sticky="ew", pady=(10, 4))
+        ).grid(row=0, column=0, columnspan=span, sticky="ew", pady=(6, 2))
         self.columnconfigure(0, weight=1)
         self.rowconfigure(0, weight=0)
         self.gauges: dict[str, Speedometer] = {}
         for index, name in enumerate(joint_names):
-            title = JOINT_LABELS.get(name, name.replace("_", " "))
+            title = title_prefix + JOINT_LABELS.get(name, name.replace("_", " "))
             gauge = Speedometer(self, title, max_deg, step_deg)
-            gauge.grid(row=index + 1, column=0, sticky="nsew", padx=8, pady=(2, 6))
-            self.rowconfigure(index + 1, weight=1, uniform="dial")
+            if horizontal:
+                gauge.grid(row=1, column=index, sticky="nsew", padx=4, pady=(0, 4))
+                self.columnconfigure(index, weight=1, uniform="dial")
+                self.rowconfigure(1, weight=1)
+            else:
+                gauge.grid(row=index + 1, column=0, sticky="nsew", padx=8, pady=(2, 6))
+                self.rowconfigure(index + 1, weight=1, uniform="dial")
             self.gauges[name] = gauge
 
     def set_step(self, step_deg: float) -> None:
@@ -378,7 +387,14 @@ class BodyGauges(tk.Frame):
 class MotionDashboard(tk.Frame):
     """Split-panel speedometers: left | right."""
 
-    def __init__(self, parent: tk.Widget, analysis_cfg: dict, on_step=None) -> None:
+    def __init__(
+        self,
+        parent: tk.Widget,
+        analysis_cfg: dict,
+        on_step=None,
+        compact: bool = False,
+        column: bool = False,
+    ) -> None:
         """Joints, full-scale and mode bin all come from config.yaml."""
         super().__init__(parent, bg=PAL.bg)
         self._on_step = on_step
@@ -390,6 +406,8 @@ class MotionDashboard(tk.Frame):
         self._steps = [float(s) for s in (analysis_cfg.get("angle_gauge_steps") or [45, 20])]
         bin_deg = float(analysis_cfg.get("angle_mode_bin_deg", 10))
         self.joint_names = left_names + right_names
+        self._held: dict[str, tuple[float, float]] = {}
+        self._hold_sec = 0.8
         self.recorder = TakeAngleRecorder(self.joint_names, bin_deg)
         vel_cfg = analysis_cfg.get("velocity") or {}
         self.linear_names = [str(name) for name in vel_cfg.get("linear_joints") or []]
@@ -403,7 +421,9 @@ class MotionDashboard(tk.Frame):
 
         region = str(analysis_cfg.get("region", "full_body")).replace("_", " ")
         space = self.space
-        if space == "3d":
+        if compact or column:
+            angle_note = "Live calculator degrees. Not the OpenSim model."
+        elif space == "3d":
             angle_note = "3D degrees  ·  angle between the body axes"
         else:
             angle_note = "2D image degrees  ·  ~180° = straight"
@@ -430,36 +450,45 @@ class MotionDashboard(tk.Frame):
             self.right = None
             return
 
-        self._build_scale_choice()
-        self._build_mark_key()
+        if not compact and not column:
+            self._build_scale_choice()
+            self._build_mark_key()
         cols = tk.Frame(self, bg=PAL.bg)
         cols.pack(fill=tk.BOTH, expand=True)
         cols.grid_columnconfigure(0, weight=1)
         cols.grid_columnconfigure(1, weight=1)
         cols.grid_rowconfigure(0, weight=1)
-        self.left = BodyGauges(cols, "Left", left_names, max_deg, "#c8e050", self._step)
-        self.right = BodyGauges(cols, "Right", right_names, max_deg, "#4ca6ff", self._step)
+        across = compact and not column
+        self.left = BodyGauges(
+            cols, "Left", left_names, max_deg, "#c8e050", self._step,
+            horizontal=across, title_prefix="L " if across else "",
+        )
+        self.right = BodyGauges(
+            cols, "Right", right_names, max_deg, "#4ca6ff", self._step,
+            horizontal=across, title_prefix="R " if across else "",
+        )
         self.left.grid(row=0, column=0, sticky="nsew", padx=(0, 6))
         self.right.grid(row=0, column=1, sticky="nsew", padx=(6, 0))
 
-        self.linear_label = tk.Label(
-            self,
-            text=self._linear_text({}),
-            bg=PAL.bg,
-            fg=PAL.text,
-            font=("Segoe UI", 10),
-            anchor="w",
-        )
-        self.linear_label.pack(fill=tk.X, pady=(8, 0))
-        self.legend = tk.Label(
-            self,
-            text="Under each dial: angular speed (°/s). Marks appear after Stop.",
-            bg=PAL.bg,
-            fg=PAL.muted,
-            font=("Segoe UI", 8),
-            anchor="w",
-        )
-        self.legend.pack(fill=tk.X, pady=(6, 0))
+        if not compact and not column:
+            self.linear_label = tk.Label(
+                self,
+                text=self._linear_text({}),
+                bg=PAL.bg,
+                fg=PAL.text,
+                font=("Segoe UI", 10),
+                anchor="w",
+            )
+            self.linear_label.pack(fill=tk.X, pady=(8, 0))
+            self.legend = tk.Label(
+                self,
+                text="Under each dial: angular speed (°/s). Marks appear after Stop.",
+                bg=PAL.bg,
+                fg=PAL.muted,
+                font=("Segoe UI", 8),
+                anchor="w",
+            )
+            self.legend.pack(fill=tk.X, pady=(6, 0))
 
     def _build_scale_choice(self) -> None:
         """Two scale buttons: 0, 45, 90… or 0, 20, 40…"""
@@ -558,6 +587,7 @@ class MotionDashboard(tk.Frame):
         self.recorder.reset()
         self.angular_recorder.reset()
         self.linear_recorder.reset()
+        self._held = {}
         if self.left is not None:
             self.left.reset()
         if self.right is not None:
@@ -570,8 +600,14 @@ class MotionDashboard(tk.Frame):
         angles: dict[str, float | None],
         angular: dict[str, float | None] | None = None,
         linear: dict[str, float | None] | None = None,
+        display: dict[str, float | None] | None = None,
     ) -> None:
-        """UI thread: record samples, move needles, show speeds."""
+        """UI thread: record samples, move needles, show speeds.
+
+        `angles` is what gets stored. `display` can fill a dial when the
+        limb is still visible. A missing sample does not change the saved
+        series. The needle keeps its last angle for a short gap.
+        """
         self.recorder.add(angles)
         if angular is not None:
             self.angular_recorder.add(angular)
@@ -579,10 +615,27 @@ class MotionDashboard(tk.Frame):
             self.linear_recorder.add(linear)
         if getattr(self, "linear_label", None) is not None:
             self.linear_label.configure(text=self._linear_text(linear or {}))
+        shown = self._display_angles(angles if display is None else display)
         if self.left is not None:
-            self.left.set_live(angles, angular)
+            self.left.set_live(shown, angular)
         if self.right is not None:
-            self.right.set_live(angles, angular)
+            self.right.set_live(shown, angular)
+
+    def _display_angles(self, angles: dict[str, float | None]) -> dict[str, float | None]:
+        now = time.perf_counter()
+        shown: dict[str, float | None] = {}
+        for name in self.joint_names:
+            value = angles.get(name)
+            if value is not None:
+                self._held[name] = (float(value), now)
+                shown[name] = float(value)
+                continue
+            previous = self._held.get(name)
+            if previous is not None and now - previous[1] <= self._hold_sec:
+                shown[name] = previous[0]
+            else:
+                shown[name] = None
+        return shown
 
     def on_stop(self, last: dict[str, float | None]) -> None:
         """Keep last needle; add min / max / mode marks."""
