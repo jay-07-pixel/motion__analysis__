@@ -55,7 +55,9 @@ MASS_KG = 61.0
 DEFAULT_WINDOW = 45
 LIVE_WINDOW = 16
 DEFAULT_MIN_FRAMES = 8
-DEFAULT_MAX_GAP = 2
+# A few frames can lose depth. That must not erase the valid window.
+# Those frames are not filled in. A longer run still clears the window.
+DEFAULT_MAX_GAP = 8
 MODEL_DIR = Path(
     r"C:\Users\jayjo\anaconda3\envs\pose2sim-offline\Lib\site-packages"
     r"\Pose2Sim\MarkerAugmenter\LSTM\v0.3_upper"
@@ -168,6 +170,7 @@ class UpperFrame:
     time_sec: float
     feature_xyz: np.ndarray  # (21,) Y-up
     hip_yup: np.ndarray  # (3,) Y-up
+    frame_index: int | None = None
 
 
 class UpperSequenceBuffer:
@@ -189,7 +192,12 @@ class UpperSequenceBuffer:
         self.frames.clear()
         self.gap = 0
 
-    def push(self, extracted: tuple[np.ndarray, np.ndarray] | None, time_sec: float) -> str:
+    def push(
+        self,
+        extracted: tuple[np.ndarray, np.ndarray] | None,
+        time_sec: float,
+        frame_index: int | None = None,
+    ) -> str:
         """Append a valid frame or record a gap. Returns 'ready' or 'buffering'."""
         if extracted is None:
             self.gap += 1
@@ -198,7 +206,10 @@ class UpperSequenceBuffer:
             return "buffering"
         self.gap = 0
         feat, hip = extracted
-        self.frames.append(UpperFrame(time_sec=float(time_sec), feature_xyz=feat, hip_yup=hip))
+        stored_frame = None if frame_index is None else int(frame_index)
+        self.frames.append(
+            UpperFrame(time_sec=float(time_sec), feature_xyz=feat, hip_yup=hip, frame_index=stored_frame)
+        )
         if len(self.frames) < self.min_frames:
             return "buffering"
         return "ready"

@@ -12,6 +12,7 @@ import numpy as np
 
 from src.pose.keypoints import Keypoint2D
 from src.pose2sim_live.upper_lstm import (
+    DEFAULT_MAX_GAP,
     FEATURE_MARKERS,
     HEIGHT_M,
     ISOLATED_PYTHON,
@@ -111,6 +112,16 @@ class BufferTest(unittest.TestCase):
         buf.push(None, 0.4)
         buf.push(None, 0.5)
         self.assertEqual(len(buf.frames), 0)
+
+    def test_a_few_missing_frames_do_not_erase_the_window(self) -> None:
+        buf = UpperSequenceBuffer(window=10, min_frames=3, max_gap=DEFAULT_MAX_GAP)
+        frame = extract_upper_frame(body(), 0.5)
+        for stamp in (0.0, 0.1, 0.2):
+            buf.push(frame, stamp)
+        for stamp in (0.3, 0.4, 0.5):
+            self.assertEqual(buf.push(None, stamp), "buffering")
+        self.assertEqual(len(buf.frames), 3)
+        self.assertEqual(buf.push(frame, 0.6), "ready")
 
 
 class WorkerTest(unittest.TestCase):

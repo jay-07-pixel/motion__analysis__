@@ -22,6 +22,7 @@ from src.pose2sim_live.lstm_common import (
     yup_to_camera,
 )
 from src.pose2sim_live.participant import require_participant_metres_kg
+from src.pose2sim_live.sync import accept_newer_result
 from src.pose2sim_live.upper_lstm import (
     DEFAULT_MAX_GAP,
     DEFAULT_MIN_FRAMES,
@@ -65,6 +66,7 @@ class LiveOnnxLstm:
         self.status = "buffering"
         self.latency_ms: float | None = None
         self.input_time_sec: float | None = None
+        self.source_frame: int | None = None
         self.result_perf: float | None = None
         self.last_T = 0
         self.error: str | None = None
@@ -95,10 +97,16 @@ class LiveOnnxLstm:
         self._thread = threading.Thread(target=self._loop, name=thread_name, daemon=True)
         self._thread.start()
 
-    def observe(self, keypoints, time_sec: float, min_visibility: float) -> None:
+    def observe(
+        self,
+        keypoints,
+        time_sec: float,
+        min_visibility: float,
+        frame_index: int | None = None,
+    ) -> None:
         extracted = self.extract_fn(keypoints, min_visibility)
         with self._lock:
-            state = self.buffer.push(extracted, time_sec)
+            state = self.buffer.push(extracted, time_sec, frame_index)
             if state == "buffering":
                 self.status = "buffering"
                 if not self.buffer.frames:
@@ -119,10 +127,19 @@ class LiveOnnxLstm:
                     self._pending = False
                     feat, hip = self.buffer.arrays()
                     feat, hip = feat.copy(), hip.copy()
-                    last_t = float(self.buffer.frames[-1].time_sec) if self.buffer.frames else None
-                self._infer(feat, hip, time.perf_counter(), last_t)
+                    last = self.buffer.frames[-1] if self.buffer.frames else None
+                    last_t = None if last is None else float(last.time_sec)
+                    last_frame = None if last is None else last.frame_index
+                self._infer(feat, hip, time.perf_counter(), last_t, last_frame)
 
-    def _infer(self, feat: np.ndarray, hip: np.ndarray, t0: float, input_time_sec: float | None) -> None:
+    def _infer(
+        self,
+        feat: np.ndarray,
+        hip: np.ndarray,
+        t0: float,
+        input_time_sec: float | None,
+        source_frame: int | None = None,
+    ) -> None:
         try:
             inputs = normalize_lstm_sequence(
                 feat, hip, self.height_m, self.mass_kg, self._mean, self._std
@@ -147,9 +164,12 @@ class LiveOnnxLstm:
                 points.append((name, x, y, z))
             latency = (time.perf_counter() - t0) * 1000.0
             with self._lock:
+                if not accept_newer_result(self.input_time_sec, input_time_sec):
+                    return
                 self._latest = points
                 self.latency_ms = latency
                 self.input_time_sec = input_time_sec
+                self.source_frame = None if source_frame is None else int(source_frame)
                 self.result_perf = time.perf_counter()
                 self.last_T = int(feat.shape[0])
                 self.status = "live"
@@ -178,6 +198,7 @@ class LiveOnnxLstm:
                 "mass_kg": self.mass_kg,
                 "causal": True,
                 "input_time_sec": self.input_time_sec,
+                "source_frame": self.source_frame,
                 "result_perf": self.result_perf,
             }
 

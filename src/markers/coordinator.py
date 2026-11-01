@@ -69,15 +69,21 @@ class LiveBodyCoordinator:
 
         threading.Thread(target=_run, name="pose2sim-lower-boot", daemon=True).start()
 
-    def observe(self, keypoints: list[Keypoint2D], time_sec: float, min_visibility: float) -> None:
+    def observe(
+        self,
+        keypoints: list[Keypoint2D],
+        time_sec: float,
+        min_visibility: float,
+        frame_index: int | None = None,
+    ) -> None:
         toes = self.feet.reconstruct(keypoints, min_visibility)
         merged = list(keypoints) + toes
         if self.upper is not None:
-            self.upper.observe(merged, time_sec, min_visibility)
+            self.upper.observe(merged, time_sec, min_visibility, frame_index)
         if self.feet.ready():
             self._boot_lower()
         if self.lower is not None:
-            self.lower.observe(merged, time_sec, min_visibility)
+            self.lower.observe(merged, time_sec, min_visibility, frame_index)
         self._toes = toes
         self._missing_lower = missing_lower_inputs(merged, min_visibility)
 
@@ -101,6 +107,7 @@ class LiveBodyCoordinator:
                         "class": kind,
                         "visibility": 1.0,
                         "t_pred_input_sec": snap.get("input_time_sec"),
+                        "source_frame": snap.get("source_frame"),
                         "t_pred_done_perf": snap.get("result_perf"),
                         "infer_latency_ms": snap.get("latency_ms"),
                     }
@@ -119,6 +126,7 @@ class LiveBodyCoordinator:
                     "class": "geometric_centre",
                     "visibility": 1.0,
                     "t_pred_input_sec": parent_t.get("t_pred_input_sec"),
+                    "source_frame": parent_t.get("source_frame"),
                     "t_pred_done_perf": parent_t.get("t_pred_done_perf"),
                     "infer_latency_ms": parent_t.get("infer_latency_ms"),
                 }
