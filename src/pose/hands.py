@@ -9,11 +9,12 @@ z from this model is NOT RealSense metres. We keep 2D (u_px, v_px) only.
 
 from __future__ import annotations
 
-import cv2
 import mediapipe as mp
 import numpy as np
 
+from src.pose.extractor_2d import bgr_frame_to_rgb
 from src.pose.keypoints import Keypoint2D
+from src.pose.wrist_identity import WristIdentityDecision, validate_wrist_identity
 
 # Official MediaPipe Hands order (index 0 .. 20).
 # https://ai.google.dev/edge/mediapipe/solutions/vision/hand_landmarker
@@ -163,6 +164,7 @@ class HandsExtractor2D:
         min_tracking_confidence: float = 0.5,
         swap_handedness: bool = True,
         match_to_pose_wrists: bool = True,
+        min_pose_confidence: float = 0.5,
     ) -> None:
         """Create the Hands model. Settings come from config.yaml.
 
@@ -176,9 +178,14 @@ class HandsExtractor2D:
                 wrists are missing.
             match_to_pose_wrists: Prefer the Pose wrist on the same arm
                 instead of the Hands Left/Right label.
+            min_pose_confidence: Pose elbow confidence required before an
+                overwrite is rejected. Same floor as pose.min_visibility.
+                Below this, the assigned sides are left as the matcher set them.
         """
         self._swap_handedness = bool(swap_handedness)
         self._match_to_pose_wrists = bool(match_to_pose_wrists)
+        self._min_pose_confidence = float(min_pose_confidence)
+        self.last_wrist_identity: WristIdentityDecision | None = None
         self._hands = mp.solutions.hands.Hands(
             static_image_mode=False,
             max_num_hands=int(max_num_hands),
@@ -204,15 +211,18 @@ class HandsExtractor2D:
         """
         if bgr_frame is None or bgr_frame.size == 0:
             return []
+        inferred = self.infer_rgb(bgr_frame_to_rgb(bgr_frame))
+        return self.keypoints_from_inference(inferred, pose_keypoints)
 
-        height, width = bgr_frame.shape[:2]
-        rgb = cv2.cvtColor(bgr_frame, cv2.COLOR_BGR2RGB)
-        rgb.flags.writeable = False
-        results = self._hands.process(rgb)
-
+    def infer_rgb(self, rgb_frame: np.ndarray) -> list[tuple[str, float, list[tuple[float, float]]]]:
+        """Run Hands on a shared RGB frame. Side labels are assigned later."""
+        if rgb_frame is None or rgb_frame.size == 0:
+            return []
+        height, width = rgb_frame.shape[:2]
+        rgb_frame.flags.writeable = False
+        results = self._hands.process(rgb_frame)
         if not results.multi_hand_landmarks:
             return []
-
         handedness = list(results.multi_handedness or [])
         raw_hands: list[tuple[str, float, list[tuple[float, float]]]] = []
         for index, hand in enumerate(results.multi_hand_landmarks):
@@ -225,18 +235,42 @@ class HandsExtractor2D:
                 for landmark in hand.landmark
             ]
             raw_hands.append((label, score, pixels))
+        return raw_hands
 
+    def keypoints_from_inference(
+        self,
+        raw_hands: list[tuple[str, float, list[tuple[float, float]]]],
+        pose_keypoints: list[Keypoint2D] | None = None,
+    ) -> list[Keypoint2D]:
+        """Turn a finished Hands inference into named pixels. Does not run the model."""
+        pose = pose_keypoints or []
+        if not raw_hands:
+            self.last_wrist_identity = validate_wrist_identity(
+                raw_hands,
+                [],
+                pose,
+                min_pose_confidence=getattr(self, "_min_pose_confidence", 0.5),
+            )
+            return []
         sides = _assign_hand_sides(
             raw_hands,
-            pose_keypoints or [],
+            pose,
             swap_handedness=self._swap_handedness,
             match_to_pose_wrists=self._match_to_pose_wrists,
         )
+        decision = validate_wrist_identity(
+            raw_hands,
+            sides,
+            pose,
+            min_pose_confidence=getattr(self, "_min_pose_confidence", 0.5),
+        )
+        self.last_wrist_identity = decision
+        accepted = set(decision.accepted_sides)
 
         keypoints: list[Keypoint2D] = []
         used_sides: set[str] = set()
         for (label, score, pixels), side in zip(raw_hands, sides):
-            if side is None or side in used_sides:
+            if side is None or side in used_sides or side not in accepted:
                 continue
             used_sides.add(side)
             for landmark_index, (u_px, v_px) in enumerate(pixels):

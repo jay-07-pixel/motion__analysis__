@@ -31,3 +31,6 @@ class Keypoint2D:
     x_m: float | None = None
     y_m: float | None = None
     z_m: float | None = None
+    filt_x_m: float | None = None
+    filt_y_m: float | None = None
+    filt_z_m: float | None = None

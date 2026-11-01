@@ -27,6 +27,13 @@ from src.pose.keypoints import Keypoint2D
 from src.pose.skeleton import LANDMARK_NAMES
 
 
+def bgr_frame_to_rgb(bgr_frame: np.ndarray) -> np.ndarray:
+    """One BGR to RGB conversion. The buffer is read-only so Pose and Hands can share it."""
+    rgb = cv2.cvtColor(bgr_frame, cv2.COLOR_BGR2RGB)
+    rgb.flags.writeable = False
+    return rgb
+
+
 class PoseExtractor2D:
     """Runs MediaPipe Pose and returns camera-frame 2D keypoints."""
 
@@ -65,12 +72,15 @@ class PoseExtractor2D:
         """
         if bgr_frame is None or bgr_frame.size == 0:
             return []
+        return self.extract_rgb(bgr_frame_to_rgb(bgr_frame))
 
-        height, width = bgr_frame.shape[:2]
-        # MediaPipe wants RGB. flags.writeable = False avoids an extra copy.
-        rgb = cv2.cvtColor(bgr_frame, cv2.COLOR_BGR2RGB)
-        rgb.flags.writeable = False
-        results = self._pose.process(rgb)
+    def extract_rgb(self, rgb_frame: np.ndarray) -> list[Keypoint2D]:
+        """Pose on an RGB image already converted for MediaPipe. Same landmarks."""
+        if rgb_frame is None or rgb_frame.size == 0:
+            return []
+        height, width = rgb_frame.shape[:2]
+        rgb_frame.flags.writeable = False
+        results = self._pose.process(rgb_frame)
 
         if not results.pose_landmarks:
             return []
