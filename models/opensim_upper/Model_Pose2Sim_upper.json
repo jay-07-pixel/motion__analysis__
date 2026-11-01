@@ -1,0 +1,25 @@
+{
+  "copy": "models\\opensim_upper\\Model_Pose2Sim_upper.osim",
+  "source_model": "C:\\Users\\jayjo\\anaconda3\\envs\\pose2sim-offline\\Lib\\site-packages\\Pose2Sim\\OpenSim_Setup\\Model_Pose2Sim_simple.osim",
+  "source_markers": "C:\\Users\\jayjo\\anaconda3\\envs\\pose2sim-offline\\Lib\\site-packages\\Pose2Sim\\OpenSim_Setup\\Markers_LSTM.xml",
+  "source_model_sha256": "0b25e3efb09f1a6e8c35dbc9a90afe7248895cc74263e3f4f0dbd29519034707",
+  "geometry_dir": "C:\\Users\\jayjo\\anaconda3\\envs\\pose2sim-offline\\Lib\\site-packages\\Pose2Sim\\OpenSim_Setup\\Geometry",
+  "geometry_copied": false,
+  "n_markers_inserted": 12,
+  "marker_names": [
+    "LElbow",
+    "LShoulder",
+    "L_lelbow_study",
+    "L_lwrist_study",
+    "L_melbow_study",
+    "L_mwrist_study",
+    "RElbow",
+    "RShoulder",
+    "r_lelbow_study",
+    "r_lwrist_study",
+    "r_melbow_study",
+    "r_mwrist_study"
+  ],
+  "locations_adjusted": false,
+  "joints_modified": false
+}
