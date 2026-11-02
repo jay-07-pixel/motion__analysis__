@@ -1357,7 +1357,7 @@ class MotionAnalysisApp:
             self.position_var.set(str(subject.get("instruction") or ""))
             distance = subject.get("distance_m")
             self.distance_var.set(
-                "Distance unavailable" if distance is None else f"Shoulder distance  {float(distance):.2f} m"
+                "Distance unavailable" if distance is None else f"Camera distance  {float(distance):.2f} m"
             )
             if snap.get("recording"):
                 elapsed = float(snap.get("capture_elapsed_sec") or 0.0)
