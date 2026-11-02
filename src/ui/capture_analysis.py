@@ -84,7 +84,7 @@ def describe_results(result: dict) -> str:
         lines.append("3D fit image: unavailable")
     timeline = Path(analysis_dir) / "plots" / "timeline.png" if analysis_dir else None
     if timeline is not None and timeline.is_file():
-        lines.append(f"Joint-angle timeline: {timeline}")
+        lines.append(f"Four angles to read first: {timeline}")
     else:
         lines.append("Joint-angle timeline: unavailable")
     lines.append("")

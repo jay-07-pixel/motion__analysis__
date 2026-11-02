@@ -101,13 +101,31 @@ CONVENTIONS = {
     ),
 }
 
+# One plain name per coordinate. The sign is not renamed to pronation or supination.
+PLAIN_NAME = {
+    "arm_flex_r": "Right shoulder bend",
+    "arm_add_r": "Right shoulder side angle",
+    "arm_rot_r": "Right shoulder twist",
+    "elbow_flex_r": "Right elbow bend",
+    "pro_sup_r": "Right forearm turn",
+    "arm_flex_l": "Left shoulder bend",
+    "arm_add_l": "Left shoulder side angle",
+    "arm_rot_l": "Left shoulder twist",
+    "elbow_flex_l": "Left elbow bend",
+    "pro_sup_l": "Left forearm turn",
+}
+PLAIN_NOTE = {
+    "elbow_flex_r": "0° is a straight elbow on this skeleton",
+    "elbow_flex_l": "0° is a straight elbow on this skeleton",
+}
+
 PLOTS = (
     ("shoulder_right.png", ("arm_flex_r", "arm_add_r", "arm_rot_r"), "Right shoulder"),
     ("shoulder_left.png", ("arm_flex_l", "arm_add_l", "arm_rot_l"), "Left shoulder"),
-    ("elbow_right.png", ("elbow_flex_r",), "Right elbow flexion"),
-    ("elbow_left.png", ("elbow_flex_l",), "Left elbow flexion"),
-    ("forearm.png", ("pro_sup_r", "pro_sup_l"), "Forearm pro_sup"),
-    ("timeline.png", MEASURED, "Upper-body joint coordinates"),
+    ("elbow_right.png", ("elbow_flex_r",), "Right elbow"),
+    ("elbow_left.png", ("elbow_flex_l",), "Left elbow"),
+    ("forearm.png", ("pro_sup_r", "pro_sup_l"), "Forearm turn"),
+    ("timeline.png", ("elbow_flex_l", "elbow_flex_r", "arm_flex_l", "arm_flex_r"), "Read these four first"),
 )
 
 
@@ -269,6 +287,21 @@ def _write_csv(path: Path, extracted: dict) -> None:
                 )
 
 
+def _degrees(extracted: dict, name: str) -> list[float]:
+    return [frame["solved"][name]["degrees"] for frame in extracted["frames"]]
+
+
+def _draw_angle(ax, times: list[float], series: list[float], name: str) -> None:
+    note = PLAIN_NOTE.get(name)
+    title = PLAIN_NAME[name]
+    ax.plot(times, series, color="#1f4e79", linewidth=1.8)
+    ax.axhline(0, color="#c5cdd6", linewidth=0.8)
+    ax.set_title(f"{title} — {note}" if note else title, loc="left", fontsize=12, color="#1a2332")
+    ax.set_ylabel("degrees")
+    ax.grid(True, alpha=0.25)
+    ax.tick_params(labelsize=9)
+
+
 def _write_plots(directory: Path, extracted: dict) -> list[str]:
     import matplotlib
 
@@ -282,15 +315,18 @@ def _write_plots(directory: Path, extracted: dict) -> list[str]:
         present = [name for name in names if name in extracted["measured_coordinates"]]
         if not present:
             continue
-        fig, ax = plt.subplots(figsize=(8, 4.5))
-        for name in present:
-            series = [frame["solved"][name]["degrees"] for frame in extracted["frames"]]
-            ax.plot(times, series, marker="o", label=name)
-        ax.set_xlabel("time (s)")
-        ax.set_ylabel("model coordinate (degrees)")
-        ax.set_title(title)
-        ax.legend(loc="center left", bbox_to_anchor=(1.02, 0.5), fontsize=8)
-        ax.grid(True, alpha=0.3)
+        columns = 2 if filename == "timeline.png" else 1
+        rows = (len(present) + columns - 1) // columns
+        fig, axes = plt.subplots(rows, columns, figsize=(10, 2.5 * rows), sharex=True, squeeze=False)
+        flat = list(axes.ravel())
+        for ax, name in zip(flat, present):
+            _draw_angle(ax, times, _degrees(extracted, name), name)
+        for ax in flat[len(present) :]:
+            ax.set_visible(False)
+        flat[min(len(present), len(flat)) - 1].set_xlabel("time (s)")
+        if columns == 2 and len(present) > 1:
+            flat[len(present) - 2].set_xlabel("time (s)")
+        fig.suptitle(f"{title}\nSkeleton angles. Not the live dials.", fontsize=13, color="#0b1f3a")
         fig.tight_layout()
         path = directory / filename
         fig.savefig(path, dpi=120, bbox_inches="tight")
