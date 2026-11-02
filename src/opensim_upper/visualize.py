@@ -49,23 +49,64 @@ _FIT_LINKS = (
 )
 
 
-def save_ik_fit_plot(trc_path: Path, model_locations_path: Path, path: Path) -> Path:
-    """Draw the last IK pose of the loaded model against the recorded markers.
+def _point_count(frame: dict) -> int:
+    return sum(point is not None for point in frame["points"].values())
 
-    The vertical axis on the figure is camera up. The stored coordinates stay
-    Y-down. Marker locations on the bones are not moved.
+
+def _frame_miss_m(frame: dict, model_row: dict) -> float:
+    """RMS metres between recorded points and the model markers on one frame."""
+    squared = []
+    for name, point in frame["points"].items():
+        if point is None or f"{name}_tx" not in model_row:
+            continue
+        dx = float(point[0]) - float(model_row[f"{name}_tx"])
+        dy = float(point[1]) - float(model_row[f"{name}_ty"])
+        dz = float(point[2]) - float(model_row[f"{name}_tz"])
+        squared.append(dx * dx + dy * dy + dz * dz)
+    if not squared:
+        return float("inf")
+    return (sum(squared) / len(squared)) ** 0.5
+
+
+def choose_fit_frame(frames: list[dict], model_rows: list[dict]) -> int:
+    """Index of one full frame whose recorded points sit closest to the model.
+
+    A reach at the end of a recording can hold every point and still sit far
+    from the skeleton. Among frames with the most points, the closest one is
+    drawn. A tie stays nearer the middle of the recording. The recorded
+    coordinates are not changed.
+    """
+    if len(frames) != len(model_rows) or not frames:
+        raise ValueError("The recorded markers and the IK model markers do not have the same number of frames.")
+    fullest = max(_point_count(frame) for frame in frames)
+    middle = (len(frames) - 1) / 2.0
+    chosen = None
+    chosen_key = None
+    for index, frame in enumerate(frames):
+        if _point_count(frame) != fullest:
+            continue
+        key = (_frame_miss_m(frame, model_rows[index]), abs(index - middle))
+        if chosen_key is None or key < chosen_key:
+            chosen = index
+            chosen_key = key
+    return int(chosen)
+
+
+def save_ik_fit_plot(trc_path: Path, model_locations_path: Path, path: Path) -> Path:
+    """Draw one IK pose of the loaded model against the recorded markers.
+
+    The frame is the fullest one whose recorded points are closest to the
+    model. The vertical axis on the figure is camera up. The stored
+    coordinates stay Y-down. Marker locations on the bones are not moved.
     """
     from src.opensim_upper.mot import read_mot
     from src.opensim_upper.trc import read_trc
 
     frames = read_trc(trc_path)["frames"]
     model_rows = read_mot(model_locations_path)["rows"]
-    if len(frames) != len(model_rows):
-        raise ValueError("The recorded markers and the IK model markers do not have the same number of frames.")
-    present = [sum(point is not None for point in frame["points"].values()) for frame in frames]
-    fullest = max(present)
-    recorded = [frame for frame, count in zip(frames, present) if count == fullest][-1]
-    model_row = model_rows[frames.index(recorded)]
+    chosen = choose_fit_frame(frames, model_rows)
+    recorded = frames[chosen]
+    model_row = model_rows[chosen]
     model_points = {}
     for name in model_row:
         if name.endswith("_tx"):
