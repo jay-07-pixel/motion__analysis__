@@ -21,9 +21,19 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from src.opensim_upper.ik_fit import marker_spacing, model_marker_rows, per_marker_residuals  # noqa: E402
+from src.opensim_upper.ik_rotation import score_forearm_rotation  # noqa: E402
 from src.opensim_upper.scaling import spacing_mapping  # noqa: E402
-from src.opensim_upper.ik_tasks import coordinate_decisions, ik_tasks, validate_trc_for_ik  # noqa: E402
+from src.opensim_upper.ik_tasks import (  # noqa: E402
+    AXIAL_COORDINATES,
+    LENGTH_TRACK_COORDINATE_WEIGHT,
+    LENGTH_TRACK_COORDINATES,
+    axial_refinement_marker_weights,
+    coordinate_decisions,
+    ik_tasks,
+    validate_trc_for_ik,
+)
 from src.opensim_upper.mot import read_mot as _read_mot  # noqa: E402
+from tools.opensim_skeleton_bodies import write_skeleton_bodies  # noqa: E402
 
 
 def _finite(value: float) -> bool:
@@ -38,8 +48,91 @@ def _all_nan(column, n_rows: int) -> bool:
     return True
 
 
+def _run_axial_refinement(
+    opensim,
+    *,
+    model_path: Path,
+    trc_path: Path,
+    pose_mot_path: Path,
+    output: Path,
+    start_time: float,
+    end_time: float,
+    held: dict,
+    absent: list[str],
+    log_lines: list[str],
+) -> Path:
+    """Second IK pass: hold pose/root from pass one, free only arm_rot / pro_sup.
+
+    Bone lengths and the first-pass flex/add/elbow/thorax trajectory stay put.
+    Stronger wrist marker weights pull forearm and humerus long-axis turn.
+    """
+    model = opensim.Model(str(model_path))
+    for name, info in held.items():
+        coordinate = model.updCoordinateSet().get(name)
+        if info["locked"]:
+            coordinate.set_locked(True)
+        elif info["motion_type"] == "rotational":
+            coordinate.set_clamped(True)
+            coordinate.set_locked(False)
+        else:
+            coordinate.set_locked(False)
+    model.initSystem()
+    tool = opensim.InverseKinematicsTool()
+    tool.setName("upper_body_12_marker_axial")
+    tool.setModel(model)
+    tool.set_model_file(str(model_path))
+    tool.setMarkerDataFileName(str(trc_path))
+    tool.set_coordinate_file(str(pose_mot_path))
+    tool.setStartTime(float(start_time))
+    tool.setEndTime(float(end_time))
+    mot_path = output / "ik_results.mot"
+    tool.setOutputMotionFileName(str(mot_path))
+    tool.setResultsDir(str(output))
+    tool.set_results_directory(str(output))
+    tool.set_accuracy(1.0e-5)
+    tool.set_report_errors(True)
+    tool.set_report_marker_locations(True)
+    tasks = tool.upd_IKTaskSet()
+    while tasks.getSize() > 0:
+        tasks.remove(0)
+    weights = axial_refinement_marker_weights()
+    setup = ik_tasks(weights, absent)
+    for task_row in setup["tasks"]:
+        task = opensim.IKMarkerTask()
+        task.setName(task_row["name"])
+        task.setWeight(float(task_row["weight"]))
+        task.setApply(bool(task_row["apply"]))
+        tasks.adoptAndAppend(task)
+    model_names = {model.getCoordinateSet().get(i).getName() for i in range(model.getCoordinateSet().getSize())}
+    for name in LENGTH_TRACK_COORDINATES:
+        if name not in model_names:
+            continue
+        task = opensim.IKCoordinateTask()
+        task.setName(name)
+        task.setApply(True)
+        task.setWeight(float(LENGTH_TRACK_COORDINATE_WEIGHT))
+        task.setValueType(opensim.IKCoordinateTask.StringToValueType("from_file"))
+        tasks.adoptAndAppend(task)
+    for name in AXIAL_COORDINATES:
+        if name not in model_names:
+            continue
+        # Explicitly free: no coordinate task, unlocked for marker-driven turn.
+        model.updCoordinateSet().get(name).set_locked(False)
+    setup_path = output / "ik_setup_axial.xml"
+    tool.printToXML(str(setup_path))
+    log_lines.append(
+        "Axial refinement: hold thorax/flex/add/elbow from the first MOT; "
+        f"free {', '.join(AXIAL_COORDINATES)}; wrist marker weight "
+        f"{weights['r_lwrist_study']}."
+    )
+    tool.run()
+    return mot_path
+
+
 def _marker_errors(folder: Path) -> dict | None:
-    files = sorted(folder.glob("*marker*error*.sto")) + sorted(folder.glob("*Marker*Error*.sto"))
+    files = sorted(folder.glob("*axial*marker*error*.sto"))
+    if not files:
+        files = sorted(folder.glob("*marker*error*.sto")) + sorted(folder.glob("*Marker*Error*.sto"))
     if not files:
         files = [path for path in folder.glob("*.sto") if path.name != "ik_model_marker_locations.sto"]
     if not files:
@@ -160,6 +253,29 @@ def run(plan_path: Path) -> int:
         tool.run()
         if model_path.read_bytes() != before:
             raise RuntimeError("The model file changed during IK.")
+        axial_used = False
+        if bool(plan.get("axial_refinement")):
+            pose_mot = output / "ik_results_pose.mot"
+            pose_mot.write_bytes(mot_path.read_bytes())
+            try:
+                mot_path = _run_axial_refinement(
+                    opensim,
+                    model_path=model_path,
+                    trc_path=trc_path,
+                    pose_mot_path=pose_mot,
+                    output=output,
+                    start_time=parsed["frames"][0]["time_sec"],
+                    end_time=parsed["frames"][-1]["time_sec"],
+                    held=held,
+                    absent=absent,
+                    log_lines=log_lines,
+                )
+                axial_used = True
+                if model_path.read_bytes() != before:
+                    raise RuntimeError("The model file changed during axial refinement.")
+            except Exception as axial_error:
+                log_lines.append(f"Axial refinement failed; keeping first IK pass. {axial_error}")
+                mot_path.write_bytes(pose_mot.read_bytes())
         motion = _read_mot(mot_path)
         # OpenSim writes rotational IK coordinates in degrees. The model ranges
         # and the report use radians. Translational coordinates stay in metres.
@@ -234,10 +350,26 @@ def run(plan_path: Path) -> int:
                     f"marker_error_RMS mean is {rms_values['mean_abs_m']:.3f} m."
                 )
         geometry = marker_spacing(parsed, spacing_mapping(model_path))
-        location_files = sorted(output.glob("*model_marker_locations.sto"))
+        location_files = sorted(output.glob("*axial*model_marker_locations.sto"))
+        if not location_files:
+            location_files = sorted(output.glob("*model_marker_locations.sto"))
         if not location_files:
             raise ValueError("OpenSim did not write model marker locations.")
-        fit = per_marker_residuals(parsed["frames"], model_marker_rows(_read_mot(location_files[0])))
+        location_table = _read_mot(location_files[0])
+        fit = per_marker_residuals(parsed["frames"], model_marker_rows(location_table))
+        rotation_fit = score_forearm_rotation(
+            parsed["frames"],
+            location_table["rows"],
+            fit.get("unweighted_rms_m"),
+        )
+        skeleton_path = write_skeleton_bodies(model_path, mot_path, output / "skeleton_bodies.sto")
+        log_lines.append(f"Wrote OpenSim body origins: {skeleton_path.name}")
+        log_lines.append(
+            "Forearm rotation score: "
+            f"wrist twist {rotation_fit['median_wrist_pair_twist_deg']} deg, "
+            f"elbow twist {rotation_fit['median_elbow_pair_twist_deg']} deg, "
+            f"axial_refinement={axial_used}."
+        )
         if not geometry["consistent_with_model_marker_spacing"]:
             pair = geometry["largest_pair"]
             reliability_reasons.append(
@@ -292,6 +424,9 @@ def run(plan_path: Path) -> int:
                 "sampled_from_opensim_model": plan.get("sampled_from_opensim_model"),
                 "geometry": geometry,
                 "marker_fit": fit,
+                "rotation_fit": rotation_fit,
+                "axial_refinement_used": axial_used,
+                "weight_policy": plan.get("weight_policy"),
                 "markers_absent_on_every_frame": absent,
                 "marker_errors": errors,
                 "time_range_sec": [trc_times[0], trc_times[-1]],

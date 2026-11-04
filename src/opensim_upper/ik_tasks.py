@@ -143,6 +143,76 @@ FORBIDDEN_MARKERS = (
     "left_wrist",
 )
 
+# Raise distal study-marker weights so arm_rot / pro_sup follow the side pairs.
+# Bone-length scaling is unchanged; these numbers only affect the IK cost.
+DISTAL_ROTATION_WEIGHTS = {
+    "RShoulder": 3.0,
+    "LShoulder": 3.0,
+    "RElbow": 5.0,
+    "LElbow": 5.0,
+    "r_lelbow_study": 10.0,
+    "r_melbow_study": 10.0,
+    "r_lwrist_study": 14.0,
+    "r_mwrist_study": 14.0,
+    "L_lelbow_study": 10.0,
+    "L_melbow_study": 10.0,
+    "L_lwrist_study": 14.0,
+    "L_mwrist_study": 14.0,
+}
+
+# Second IK pass: hold the pose angles from pass one, free only axial turn.
+# Wrist side-pairs get the strongest pull; elbow diamonds are softer so humeral
+# rotation can follow the forearm turn instead of fighting it.
+AXIAL_REFINEMENT_MARKER_WEIGHTS = {
+    "RShoulder": 1.5,
+    "LShoulder": 1.5,
+    "RElbow": 3.0,
+    "LElbow": 3.0,
+    "r_lelbow_study": 6.0,
+    "r_melbow_study": 6.0,
+    "r_lwrist_study": 30.0,
+    "r_mwrist_study": 30.0,
+    "L_lelbow_study": 6.0,
+    "L_melbow_study": 6.0,
+    "L_lwrist_study": 30.0,
+    "L_mwrist_study": 30.0,
+}
+
+AXIAL_COORDINATES = (
+    "arm_rot_r",
+    "arm_rot_l",
+    "pro_sup_r",
+    "pro_sup_l",
+)
+
+# Soft-tracked from the first MOT so limb pose / root stay put while axial turns.
+LENGTH_TRACK_COORDINATES = (
+    "thorax_rx",
+    "thorax_ry",
+    "thorax_rz",
+    "thorax_tx",
+    "thorax_ty",
+    "thorax_tz",
+    "arm_flex_r",
+    "arm_add_r",
+    "arm_flex_l",
+    "arm_add_l",
+    "elbow_flex_r",
+    "elbow_flex_l",
+)
+
+LENGTH_TRACK_COORDINATE_WEIGHT = 25.0
+
+
+def distal_rotation_weights() -> dict[str, float]:
+    """Marker weights that favour forearm and humerus long-axis fit."""
+    return dict(DISTAL_ROTATION_WEIGHTS)
+
+
+def axial_refinement_marker_weights() -> dict[str, float]:
+    """Stronger wrist weights used only while pose angles are held from pass one."""
+    return dict(AXIAL_REFINEMENT_MARKER_WEIGHTS)
+
 
 def coordinate_decisions(names: list[str] | None = None) -> dict[str, dict]:
     """Classify every coordinate. An unknown name is an error, not a silent default."""

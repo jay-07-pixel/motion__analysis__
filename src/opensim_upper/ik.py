@@ -31,8 +31,14 @@ def run_upper_body_ik(
     trial_metadata: Path | None = None,
     weight_overrides: dict[str, float] | None = None,
     model_path: Path | None = None,
+    axial_refinement: bool = False,
 ) -> dict:
-    """Validate the TRC, then run IK. The model file is not edited."""
+    """Validate the TRC, then run IK. The model file is not edited.
+
+    Default marker weights stay the official / equal setup. Distal rotation
+    weights and a second axial pass are optional only: on real captures they
+    improved pair twist a little but made the point gaps worse.
+    """
     if not OPENSIM_PYTHON.is_file():
         raise FileNotFoundError(f"Isolated OpenSim interpreter was not found: {OPENSIM_PYTHON}")
     model = Path(model_path or UPPER_MODEL)
@@ -43,16 +49,20 @@ def run_upper_body_ik(
         metadata = json.loads(Path(trial_metadata).read_text(encoding="utf-8"))
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
+    weights = dict(weight_overrides) if weight_overrides is not None else {}
+    weight_policy = "caller_override" if weight_overrides is not None else "default_marker_weights"
     plan = {
         "model": str(model.resolve()),
         "trc": str(Path(trc_path).resolve()),
         "output_dir": str(output_dir.resolve()),
-        "weight_overrides": weight_overrides or {},
+        "weight_overrides": weights,
+        "weight_policy": weight_policy,
+        "axial_refinement": bool(axial_refinement),
         "synthetic": metadata.get("synthetic"),
         "participant_capture": metadata.get("participant_capture"),
         "physical_validation": metadata.get("physical_validation", "not_performed"),
         "sampled_from_opensim_model": metadata.get("sampled_from_opensim_model"),
-        "tasks_preview": ik_tasks(weight_overrides)["tasks"],
+        "tasks_preview": ik_tasks(weights or None)["tasks"],
     }
     plan_path = output_dir / "ik_plan.json"
     plan_path.write_text(json.dumps(plan, indent=2), encoding="utf-8")
