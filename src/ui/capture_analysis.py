@@ -78,10 +78,16 @@ def describe_results(result: dict) -> str:
     lines.append("")
     lines.append("2D skeleton: shown on the camera preview during capture.")
     skeleton = Path(analysis_dir) / "plots" / "skeleton_fit.png" if analysis_dir else None
+    rotatable = Path(analysis_dir) / "plots" / "skeleton_fit.html" if analysis_dir else None
+    bone_video = Path(analysis_dir) / "plots" / "skeleton_fit.mp4" if analysis_dir else None
+    if rotatable is not None and rotatable.is_file():
+        lines.append(f"3D fit you can rotate: {rotatable}")
+    if bone_video is not None and bone_video.is_file():
+        lines.append(f"Bone video, same length as the capture: {bone_video}")
     if skeleton is not None and skeleton.is_file():
         lines.append(f"3D fit image: {skeleton}")
-    else:
-        lines.append("3D fit image: unavailable")
+    elif rotatable is None or not rotatable.is_file():
+        lines.append("3D fit: unavailable")
     timeline = Path(analysis_dir) / "plots" / "timeline.png" if analysis_dir else None
     if timeline is not None and timeline.is_file():
         lines.append(f"Four angles to read first: {timeline}")
@@ -172,18 +178,59 @@ def analyze_capture(diag_dir: Path, project_root: Path) -> dict:
             scale_statement=statement,
         )
         plots = list(summary.get("plots") or [])
-        locations = sorted(ik_dir.glob("*model_marker_locations.sto"))
+        locations = sorted(
+            path
+            for path in ik_dir.glob("*model_marker_locations.sto")
+            if "axial" not in path.name
+        ) or sorted(ik_dir.glob("*model_marker_locations.sto"))
         if locations:
             fit_image = angle_dir / "plots" / "skeleton_fit.png"
-            save_ik_fit_plot(trial_dir / "markers.trc", locations[0], fit_image)
+            bodies = ik_dir / "skeleton_bodies.sto"
+            take_rms = ((report.get("marker_errors") or {}).get("columns") or {}).get(
+                "marker_error_RMS", {}
+            ).get("mean_abs_m")
+            save_ik_fit_plot(
+                trial_dir / "markers.trc",
+                locations[0],
+                fit_image,
+                skeleton_bodies_path=bodies if bodies.is_file() else None,
+                model_path=Path(scaled["model_path"]),
+                take_rms_mm=None if take_rms is None else float(take_rms) * 1000.0,
+                ik_trc_path=trial_dir / "markers_ik.trc",
+            )
             plots.append(fit_image.name)
-            report_md = angle_dir / "analysis_report.md"
-            if report_md.is_file() and "skeleton_fit.png" not in report_md.read_text(encoding="utf-8"):
-                report_md.write_text(
-                    report_md.read_text(encoding="utf-8").rstrip() + "\n- `plots/skeleton_fit.png`\n",
-                    encoding="utf-8",
+            plots.append(fit_image.with_suffix(".html").name)
+            bone_video = fit_image.with_suffix(".mp4")
+            from src.opensim_upper.fit_video import write_fit_video
+
+            try:
+                write_fit_video(
+                    trial_dir / "markers.trc",
+                    locations[0],
+                    bone_video,
+                    skeleton_bodies_path=bodies if bodies.is_file() else None,
+                    model_path=Path(scaled["model_path"]),
                 )
+            except Exception as error:
+                bone_video.unlink(missing_ok=True)
+                video_note = f" The bone video was not written: {error}"
+            else:
+                video_note = ""
+                plots.append(bone_video.name)
+            report_md = angle_dir / "analysis_report.md"
+            if report_md.is_file():
+                text = report_md.read_text(encoding="utf-8")
+                extra = ""
+                if "skeleton_fit.png" not in text:
+                    extra += "\n- `plots/skeleton_fit.png`"
+                if "skeleton_fit.html" not in text:
+                    extra += "\n- `plots/skeleton_fit.html`"
+                if bone_video.is_file() and "skeleton_fit.mp4" not in text:
+                    extra += "\n- `plots/skeleton_fit.mp4`"
+                if extra:
+                    report_md.write_text(text.rstrip() + extra + "\n", encoding="utf-8")
     finished = bool(report.get("execution_success"))
+    video_note = locals().get("video_note", "")
     return {
         **base,
         "ok": finished,
@@ -191,6 +238,7 @@ def analyze_capture(diag_dir: Path, project_root: Path) -> dict:
         "message": (
             "Inverse kinematics finished on the sized copy in the camera frame. "
             "The generic model file was not loaded. This is a model fit, not a clinical measurement."
+            + video_note
             if finished
             else report.get("error") or "Inverse kinematics did not finish."
         ),
@@ -201,5 +249,6 @@ def analyze_capture(diag_dir: Path, project_root: Path) -> dict:
         "analysis_dir": str(angle_dir) if finished else None,
         "trc": written["trc"],
         "plots": plots,
+        "bone_video": str(angle_dir / "plots" / "skeleton_fit.mp4") if finished and (angle_dir / "plots" / "skeleton_fit.mp4").is_file() else None,
         "reliability_reasons": list(report.get("reliability_reasons") or []),
     }

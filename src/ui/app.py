@@ -89,6 +89,8 @@ class MotionAnalysisApp:
         self._saved_capture: dict = {}
         self._analysis_result: dict | None = None
         self._analyzing = False
+        self._bone_play = None
+        self._bone_token = None
         self._phase = "disconnected"
         self.dashboard = None
 
@@ -1208,8 +1210,23 @@ class MotionAnalysisApp:
         elif self._saved_capture.get("diag_dir"):
             folder = self._saved_capture["diag_dir"]
         if folder:
+            actions = tk.Frame(win, bg=PAL.bg)
+            actions.pack(anchor="e", padx=16, pady=(0, 16))
+            fit_page = Path(folder) / "plots" / "skeleton_fit.html"
+            if fit_page.is_file():
+                tk.Button(
+                    actions,
+                    text="Open 3D fit",
+                    command=lambda path=str(fit_page): __import__("os").startfile(path),
+                    bd=0,
+                    bg=PAL.accent,
+                    fg="white",
+                    font=("Segoe UI", 10, "bold"),
+                    padx=12,
+                    pady=6,
+                ).pack(side=tk.LEFT, padx=(0, 8))
             tk.Button(
-                win,
+                actions,
                 text="Open folder",
                 command=lambda path=folder: __import__("os").startfile(path),
                 bd=0,
@@ -1218,7 +1235,7 @@ class MotionAnalysisApp:
                 font=("Segoe UI", 10, "bold"),
                 padx=12,
                 pady=6,
-            ).pack(anchor="e", padx=16, pady=(0, 16))
+            ).pack(side=tk.LEFT)
 
     def _on_stop(self) -> None:
         """Ask the worker to finish and close the camera."""
@@ -1376,7 +1393,9 @@ class MotionAnalysisApp:
         elif not self._analyzing:
             self.camera_status_var.set("Camera disconnected")
             self.depth_status_var.set("Depth stream off")
-        if self._analysis_result is not None and not self._analyzing:
+        if self._bone_play is not None:
+            self.analysis_var.set("Playing the bone fit for the same time as the capture.")
+        elif self._analysis_result is not None and not self._analyzing:
             self.analysis_var.set(str(self._analysis_result.get("message") or "Analysis finished."))
         self._refresh_actions()
 
@@ -1467,7 +1486,19 @@ class MotionAnalysisApp:
         self._paint_live_status()
         if self.dashboard is not None and self._running:
             self.dashboard.on_frame(angles, angular, linear, gauge_display)
-        if frame is not None:
+        self._start_bone_playback()
+        showed_bones = False
+        if self._bone_play is not None:
+            played = self._bone_play.frame()
+            if played is not None:
+                t_ui = time.perf_counter()
+                self._show_frame(played)
+                self._ui_display_ms = (time.perf_counter() - t_ui) * 1000.0
+                showed_bones = True
+            if self._bone_play.done:
+                self._bone_play.close()
+                self._bone_play = None
+        if frame is not None and not showed_bones:
             t_ui = time.perf_counter()
             self._show_frame(frame)
             self._ui_display_ms = (time.perf_counter() - t_ui) * 1000.0
@@ -1681,6 +1712,22 @@ class MotionAnalysisApp:
                     anchor="w",
                 ).grid(row=row_i, column=col, sticky="w", padx=12, pady=4)
         tk.Frame(card, bg=PAL.card, height=8).grid(row=len(names) + 2, column=0)
+
+    def _start_bone_playback(self) -> None:
+        """After analysis, play the bone movie once, for the capture length."""
+        result = self._analysis_result
+        if not result or self._analyzing or self._bone_play is not None:
+            return
+        video = result.get("bone_video")
+        if not video or not Path(video).is_file():
+            return
+        token = id(result)
+        if token == self._bone_token:
+            return
+        from src.opensim_upper.fit_video import BonePlayback
+
+        self._bone_token = token
+        self._bone_play = BonePlayback(video)
 
     def _show_frame(self, bgr) -> None:
         """Fit the overlay into the video panel and display it."""
