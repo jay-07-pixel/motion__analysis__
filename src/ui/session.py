@@ -647,9 +647,16 @@ class MotionSession2D:
             records = self._body.overlay_records()
             self.lstm_sync = _lstm_display_decision(records, time_sec, self.frame_index, analysis_cfg)
             if self.lstm_sync["draw"]:
+                # Side study markers only on the live picture. The mid-point
+                # centre sits between the two wrists and looks like one blob.
                 visible = [
-                    record for record in records
-                    if record.get("class") == "calibrated_toe" or record.get("t_pred_input_sec") is not None
+                    record
+                    for record in records
+                    if record.get("class") != "geometric_centre"
+                    and (
+                        record.get("class") == "calibrated_toe"
+                        or record.get("t_pred_input_sec") is not None
+                    )
                 ]
                 self.last_lstm_estimates = _project_lstm_points(
                     self.source.color_intrinsics(),

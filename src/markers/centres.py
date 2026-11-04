@@ -2,6 +2,18 @@
 
 from __future__ import annotations
 
+# Lateral/medial study pairs. The two side markers are the LSTM outputs.
+STUDY_SIDE_PAIRS = (
+    ("r_lelbow_study", "r_melbow_study"),
+    ("L_lelbow_study", "L_melbow_study"),
+    ("r_lwrist_study", "r_mwrist_study"),
+    ("L_lwrist_study", "L_mwrist_study"),
+    ("r_knee_study", "r_mknee_study"),
+    ("L_knee_study", "L_mknee_study"),
+    ("r_ankle_study", "r_mankle_study"),
+    ("L_ankle_study", "L_mankle_study"),
+)
+
 PAIRS = (
     ("r_elbow_centre", "r_lelbow_study", "r_melbow_study"),
     ("L_elbow_centre", "L_lelbow_study", "L_melbow_study"),

@@ -8,7 +8,13 @@ import unittest
 import numpy as np
 
 from src.pose.keypoints import Keypoint2D
-from src.ui.live_markers import draw_live_landmarks, has_camera_xyz, inventory, short_label
+from src.ui.live_markers import (
+    _hidden_observed_wrists,
+    draw_live_landmarks,
+    has_camera_xyz,
+    inventory,
+    short_label,
+)
 
 
 def kp(name: str, u: float, v: float, conf: float = 0.9, xyz=None) -> Keypoint2D:
@@ -67,6 +73,35 @@ class DrawTest(unittest.TestCase):
         source = inspect.getsource(draw_live_landmarks)
         self.assertNotIn("short_label", source)
         self.assertIn("fps", source)
+
+    def test_wrist_study_pair_hides_mediapipe_wrist_centre(self) -> None:
+        estimates = {
+            "L_lwrist_study": kp("L_lwrist_study", 40, 100, xyz=(-0.05, 0.2, 1.0)),
+            "L_mwrist_study": kp("L_mwrist_study", 80, 100, xyz=(0.05, 0.2, 1.0)),
+            "r_lwrist_study": kp("r_lwrist_study", 200, 100, xyz=(0.20, 0.2, 1.0)),
+            "r_mwrist_study": kp("r_mwrist_study", 240, 100, xyz=(0.30, 0.2, 1.0)),
+        }
+        hidden = _hidden_observed_wrists(estimates, width=320, height=240)
+        self.assertEqual(hidden, {"left_wrist", "right_wrist"})
+        frame = np.zeros((240, 320, 3), dtype=np.uint8)
+        points = [
+            kp("left_elbow", 60, 60, xyz=(0.0, 0.1, 1.0)),
+            kp("left_wrist", 60, 100, xyz=(0.0, 0.2, 1.0)),
+            kp("right_elbow", 220, 60, xyz=(0.25, 0.1, 1.0)),
+            kp("right_wrist", 220, 100, xyz=(0.25, 0.2, 1.0)),
+        ]
+        out = draw_live_landmarks(
+            frame,
+            points,
+            min_visibility=0.5,
+            fps=10.0,
+            space="3d",
+            estimates=list(estimates.values()),
+        )
+        self.assertGreater(int(out.sum()), 0)
+        # Side diamonds leave magenta pixels away from the MediaPipe wrist centre.
+        self.assertGreater(int(out[100, 40, 0]), 0)
+        self.assertGreater(int(out[100, 80, 0]), 0)
 
     def test_live_rgb_does_not_draw_joint_frame_axes(self) -> None:
         from src.ui.session import MotionSession2D

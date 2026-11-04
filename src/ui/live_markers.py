@@ -13,6 +13,7 @@ import cv2
 import numpy as np
 
 from src.markers.catalog import GEOMETRIC_CENTRES, TOE_INPUTS
+from src.markers.centres import STUDY_SIDE_PAIRS
 from src.pose.hands import HAND_SKELETON_BONES, HAND_STEMS, POSE_SIMPLE_HAND_BONES, hand_joint_name
 from src.pose.keypoints import Keypoint2D
 from src.pose.skeleton import LANDMARK_NAMES, SKELETON_BONES
@@ -27,10 +28,21 @@ _LEFT = (255, 190, 40)
 _RIGHT = (40, 110, 255)
 _MID = (0, 220, 220)
 _INVALID_RING = (40, 40, 220)
-# Pose2Sim LSTM estimates (offline). Distinct from left/right observed colours.
+# Pose2Sim LSTM estimates. Distinct from left/right observed colours.
 _ESTIMATE = (180, 0, 255)
+_ESTIMATE_RING = (255, 255, 255)
 _CALIBRATED = (0, 255, 180)
-_CENTRE = (80, 220, 255)
+_WRIST_PAIR_BAR = (220, 40, 255)
+
+# Observed MediaPipe wrist → LSTM side-pair that replaces it on the live picture.
+_WRIST_STUDY_PAIRS = {
+    "right_wrist": ("r_lwrist_study", "r_mwrist_study"),
+    "left_wrist": ("L_lwrist_study", "L_mwrist_study"),
+}
+_ELBOW_FOR_WRIST = {
+    "right_wrist": "right_elbow",
+    "left_wrist": "left_elbow",
+}
 
 # Observed 3D joints the live view should emphasise. Not paper SAT / epicondyles.
 _FOCUS_OBSERVED = frozenset(
@@ -146,6 +158,54 @@ def inventory(
     )
 
 
+def _estimate_pair_ready(est_by_name: dict[str, Keypoint2D], a: str, b: str, width: int, height: int) -> bool:
+    """True when both study markers project inside the colour frame."""
+    left = est_by_name.get(a)
+    right = est_by_name.get(b)
+    if left is None or right is None:
+        return False
+    for kp in (left, right):
+        u, v = int(round(kp.u_px)), int(round(kp.v_px))
+        if u < 0 or v < 0 or u >= width or v >= height:
+            return False
+    return True
+
+
+def _hidden_observed_wrists(est_by_name: dict[str, Keypoint2D], width: int, height: int) -> set[str]:
+    """MediaPipe wrist joints to hide when the LSTM side-pair is on screen."""
+    hidden: set[str] = set()
+    for observed, pair in _WRIST_STUDY_PAIRS.items():
+        if _estimate_pair_ready(est_by_name, pair[0], pair[1], width, height):
+            hidden.add(observed)
+    return hidden
+
+
+def _draw_study_pair(
+    canvas: np.ndarray,
+    a: Keypoint2D,
+    b: Keypoint2D,
+    *,
+    bar_colour: tuple[int, int, int],
+    marker_size: int,
+) -> None:
+    """One lateral/medial bar and two side markers. Coordinates are not moved."""
+    ua, va = int(round(a.u_px)), int(round(a.v_px))
+    ub, vb = int(round(b.u_px)), int(round(b.v_px))
+    cv2.line(canvas, (ua, va), (ub, vb), bar_colour, 3, cv2.LINE_AA)
+    for u, v in ((ua, va), (ub, vb)):
+        cv2.circle(canvas, (u, v), 10, _ESTIMATE_RING, thickness=2, lineType=cv2.LINE_AA)
+        cv2.circle(canvas, (u, v), 6, _ESTIMATE, thickness=-1, lineType=cv2.LINE_AA)
+        cv2.drawMarker(
+            canvas,
+            (u, v),
+            _ESTIMATE_RING,
+            markerType=cv2.MARKER_DIAMOND,
+            markerSize=marker_size,
+            thickness=2,
+            line_type=cv2.LINE_AA,
+        )
+
+
 def draw_live_landmarks(
     frame: np.ndarray,
     keypoints: list[Keypoint2D],
@@ -159,13 +219,21 @@ def draw_live_landmarks(
     """All currently detected model landmarks on a copy of the RGB frame.
 
     Optional `estimates` are Pose2Sim LSTM points already converted to pixels.
-    They are drawn as magenta diamonds. No text, names, or tags on the video.
+    When both wrist study markers are present for a side, the MediaPipe wrist
+    centre is not drawn, so the two side diamonds stay visible. No text on the
+    video. Marker coordinates are not moved.
     """
     _ = fps, space, banner, banners
     canvas = frame.copy()
+    h, w = canvas.shape[:2]
     by_name = {kp.name: kp for kp in keypoints}
+    est_by_name = {kp.name: kp for kp in (estimates or []) if kp.name not in GEOMETRIC_CENTRES}
+    hidden_wrists = _hidden_observed_wrists(est_by_name, w, h)
+
     bones = list(SKELETON_BONES) + list(HAND_SKELETON_BONES)
     for start_name, end_name in bones:
+        if start_name in hidden_wrists or end_name in hidden_wrists:
+            continue
         if (start_name, end_name) in POSE_SIMPLE_HAND_BONES:
             knuckle = by_name.get(
                 f"{'left' if start_name.startswith('left_') else 'right'}_index_mcp"
@@ -188,8 +256,32 @@ def draw_live_landmarks(
             cv2.LINE_AA,
         )
 
+    # Forearm sticks to each wrist side-marker instead of the MediaPipe centre.
+    for observed, pair in _WRIST_STUDY_PAIRS.items():
+        if observed not in hidden_wrists:
+            continue
+        elbow = by_name.get(_ELBOW_FOR_WRIST[observed])
+        if elbow is None or not visible(elbow, min_visibility):
+            continue
+        eu, ev = int(round(elbow.u_px)), int(round(elbow.v_px))
+        colour = _bgr_for(observed)
+        for name in pair:
+            tip = est_by_name.get(name)
+            if tip is None:
+                continue
+            cv2.line(
+                canvas,
+                (eu, ev),
+                (int(round(tip.u_px)), int(round(tip.v_px))),
+                colour,
+                2,
+                cv2.LINE_AA,
+            )
+
     for kp in keypoints:
         if not visible(kp, min_visibility):
+            continue
+        if kp.name in hidden_wrists:
             continue
         colour = _bgr_for(kp.name)
         centre = (int(round(kp.u_px)), int(round(kp.v_px)))
@@ -200,25 +292,42 @@ def draw_live_landmarks(
             cv2.circle(canvas, centre, radius, _INVALID_RING, thickness=1, lineType=cv2.LINE_AA)
             cv2.circle(canvas, centre, max(1, radius // 2), colour, thickness=-1, lineType=cv2.LINE_AA)
 
-    h, w = canvas.shape[:2]
+    drawn_pair_names: set[str] = set()
+    for left, right in STUDY_SIDE_PAIRS:
+        a = est_by_name.get(left)
+        b = est_by_name.get(right)
+        if a is None or b is None:
+            continue
+        if not _estimate_pair_ready(est_by_name, left, right, w, h):
+            continue
+        is_wrist = left.endswith("wrist_study")
+        _draw_study_pair(
+            canvas,
+            a,
+            b,
+            bar_colour=_WRIST_PAIR_BAR if is_wrist else _ESTIMATE,
+            marker_size=26 if is_wrist else 18,
+        )
+        drawn_pair_names.update((left, right))
+
     for kp in estimates or []:
+        if kp.name in GEOMETRIC_CENTRES or kp.name in drawn_pair_names:
+            continue
         u, v = int(round(kp.u_px)), int(round(kp.v_px))
         if u < 0 or v < 0 or u >= w or v >= h:
             continue
         if kp.name in TOE_INPUTS:
-            colour, marker = _CALIBRATED, cv2.MARKER_SQUARE
-        elif kp.name in GEOMETRIC_CENTRES:
-            colour, marker = _CENTRE, cv2.MARKER_TILTED_CROSS
+            colour, marker, size = _CALIBRATED, cv2.MARKER_SQUARE, 18
         else:
-            colour, marker = _ESTIMATE, cv2.MARKER_DIAMOND
-        cv2.circle(canvas, (u, v), 8, (255, 255, 255), thickness=2, lineType=cv2.LINE_AA)
+            colour, marker, size = _ESTIMATE, cv2.MARKER_DIAMOND, 18
+        cv2.circle(canvas, (u, v), 8, _ESTIMATE_RING, thickness=2, lineType=cv2.LINE_AA)
         cv2.circle(canvas, (u, v), 5, colour, thickness=-1, lineType=cv2.LINE_AA)
         cv2.drawMarker(
             canvas,
             (u, v),
-            (255, 255, 255),
+            _ESTIMATE_RING,
             markerType=marker,
-            markerSize=18,
+            markerSize=size,
             thickness=2,
             line_type=cv2.LINE_AA,
         )
@@ -371,16 +480,26 @@ class LiveMarkerWindow:
                 colours.append("#f1c40f")
             sizes.append(36 if kp.name in _FOCUS_OBSERVED else 16)
         ax.scatter(xs, ys, zs, c=colours, s=sizes, picker=6, depthshade=False)
-        est = [kp for kp in (estimates or []) if has_camera_xyz(kp)]
+        est = [
+            kp
+            for kp in (estimates or [])
+            if has_camera_xyz(kp) and kp.name not in GEOMETRIC_CENTRES
+        ]
         if est:
-            est_colours = []
-            for kp in est:
-                if kp.name in TOE_INPUTS:
-                    est_colours.append("#00e0a0")
-                elif kp.name in GEOMETRIC_CENTRES:
-                    est_colours.append("#50dcff")
-                else:
-                    est_colours.append("#e000ff")
+            by_est = {kp.name: kp for kp in est}
+            for left, right in STUDY_SIDE_PAIRS:
+                a = by_est.get(left)
+                b = by_est.get(right)
+                if a is None or b is None:
+                    continue
+                ax.plot(
+                    [a.x_m, b.x_m],
+                    [a.y_m, b.y_m],
+                    [a.z_m, b.z_m],
+                    color="#e000ff",
+                    lw=2.0,
+                )
+            est_colours = ["#00e0a0" if kp.name in TOE_INPUTS else "#e000ff" for kp in est]
             ax.scatter(
                 [kp.x_m for kp in est],
                 [kp.y_m for kp in est],
@@ -400,7 +519,7 @@ class LiveMarkerWindow:
                 f"{short_label(kp.name):18s}  {kp.x_m:6.3f} {kp.y_m:6.3f} {kp.z_m:6.3f}",
             )
         for kp in est:
-            kind = "TOE" if kp.name in TOE_INPUTS else ("CTR" if kp.name in GEOMETRIC_CENTRES else "EST")
+            kind = "TOE" if kp.name in TOE_INPUTS else "EST"
             self._list.insert(
                 self._tk.END,
                 f"{kind} {kp.name:16s}  {kp.x_m:6.3f} {kp.y_m:6.3f} {kp.z_m:6.3f}",
