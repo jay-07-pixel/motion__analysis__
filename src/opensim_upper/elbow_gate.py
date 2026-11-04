@@ -20,7 +20,7 @@ from src.opensim_upper.step_gate import omit_impossible_steps
 from src.opensim_upper.trc import read_trc, write_trc
 from src.opensim_upper.wrist_gate import (
     gate_wrist_frames,
-    model_wrist_elbow_roll_deg,
+    model_wrist_elbow_roll_range_report,
     model_wrist_pair_distances,
 )
 
@@ -118,11 +118,26 @@ def write_gated_ik_trc(source: Path, dest: Path, model_path: Path) -> dict:
     before = source_path.read_bytes()
     parsed = read_trc(source_path)
     gated, elbow_summary = gate_elbow_frames(parsed["frames"], model_pair_distances(model_path))
+    roll_report = model_wrist_elbow_roll_range_report(model_path)
+    pair_roll_range_deg = {
+        pair: (
+            float(roll_report["pairs"][f"{pair[0]}|{pair[1]}"]["min_deg"]),
+            float(roll_report["pairs"][f"{pair[0]}|{pair[1]}"]["max_deg"]),
+        )
+        for pair in (
+            ("r_lwrist_study", "r_mwrist_study"),
+            ("L_lwrist_study", "L_mwrist_study"),
+        )
+    }
     gated, wrist_summary = gate_wrist_frames(
         gated,
         model_wrist_pair_distances(model_path),
-        pair_roll_deg=model_wrist_elbow_roll_deg(model_path),
+        pair_roll_range_deg=pair_roll_range_deg,
     )
+    wrist_summary = {
+        **wrist_summary,
+        "roll_range_report": roll_report,
+    }
     gated, steps = omit_impossible_steps(gated)
     statement = (
         f"{elbow_summary['statement']} {wrist_summary['statement']} {steps['statement']}"
