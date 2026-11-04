@@ -4,7 +4,7 @@ The recorded TRC is not edited. A second TRC is written for inverse kinematics.
 On a frame, the two estimate points of one elbow are copied unchanged when
 their distance is within the same-parent mismatch flag of the model pair.
 Otherwise both points are omitted on that frame. They are not moved closer
-together or farther apart. Wrist study markers are not gated.
+together or farther apart. Wrist study pairs use the same rule in wrist_gate.
 """
 
 from __future__ import annotations
@@ -18,6 +18,11 @@ from src.opensim_upper.residuals import REPORT_MISMATCH_M
 from src.opensim_upper.scaling import spacing_mapping
 from src.opensim_upper.step_gate import omit_impossible_steps
 from src.opensim_upper.trc import read_trc, write_trc
+from src.opensim_upper.wrist_gate import (
+    gate_wrist_frames,
+    model_wrist_elbow_roll_deg,
+    model_wrist_pair_distances,
+)
 
 ELBOW_STUDY_PAIRS = (
     ("r_lelbow_study", "r_melbow_study"),
@@ -105,17 +110,30 @@ def gate_elbow_frames(
 
 
 def write_gated_ik_trc(source: Path, dest: Path, model_path: Path) -> dict:
-    """Copy a TRC for IK, omitting elbow pairs that do not match the model spacing."""
+    """Copy a TRC for IK, omitting elbow/wrist pairs that do not match model spacing."""
     source_path = Path(source)
     dest_path = Path(dest)
     if source_path.resolve() == dest_path.resolve():
         raise ValueError("The IK TRC must be a separate file. The recorded TRC is not edited.")
     before = source_path.read_bytes()
     parsed = read_trc(source_path)
-    gated, summary = gate_elbow_frames(parsed["frames"], model_pair_distances(model_path))
+    gated, elbow_summary = gate_elbow_frames(parsed["frames"], model_pair_distances(model_path))
+    gated, wrist_summary = gate_wrist_frames(
+        gated,
+        model_wrist_pair_distances(model_path),
+        pair_roll_deg=model_wrist_elbow_roll_deg(model_path),
+    )
     gated, steps = omit_impossible_steps(gated)
-    summary["step_gate"] = steps
-    summary["statement"] = f"{summary['statement']} {steps['statement']}"
+    statement = (
+        f"{elbow_summary['statement']} {wrist_summary['statement']} {steps['statement']}"
+    )
+    summary = {
+        **elbow_summary,
+        "wrist_markers_gated": True,
+        "wrist_gate": wrist_summary,
+        "step_gate": steps,
+        "statement": statement,
+    }
     names = list(parsed["markers"])
     samples = {
         name: [frame["points"].get(name) for frame in gated]
@@ -134,10 +152,14 @@ def write_gated_ik_trc(source: Path, dest: Path, model_path: Path) -> dict:
         raise RuntimeError("The recorded TRC changed while the IK copy was written.")
     report_path = dest_path.parent / "elbow_gate.json"
     report_path.write_text(json.dumps(summary, indent=2), encoding="utf-8")
+    (dest_path.parent / "wrist_gate.json").write_text(
+        json.dumps(wrist_summary, indent=2),
+        encoding="utf-8",
+    )
     return {
         "trc": str(dest_path),
         "report": str(report_path),
-        "statement": summary["statement"],
+        "statement": statement,
         "summary": summary,
     }
 

@@ -49,6 +49,7 @@ class ElbowSpacingGateTest(unittest.TestCase):
         self.assertEqual(gated[0]["points"]["r_melbow_study"], medial)
         self.assertIsNone(gated[0]["points"]["L_lelbow_study"])
         self.assertIsNone(gated[0]["points"]["L_melbow_study"])
+        # Elbow gate alone does not touch wrists.
         self.assertEqual(gated[0]["points"]["r_lwrist_study"], (0.2, 0.2, 1.2))
         self.assertEqual(gated[0]["points"]["r_mwrist_study"], (0.2, 0.2, 1.21))
         self.assertEqual(original["points"]["L_lelbow_study"], (0.0, 0.0, 1.0))
@@ -90,8 +91,13 @@ class ElbowSpacingGateTest(unittest.TestCase):
         samples["r_melbow_study"] = [(0.0, 0.0, 1.0 - distances[("r_lelbow_study", "r_melbow_study")])]
         samples["L_lelbow_study"] = [(0.1, 0.2, 1.2)]
         samples["L_melbow_study"] = [(0.1, 0.2, 1.224)]
+        # Narrow wrists (~1 cm) left out by spacing. Good-width left wrists are
+        # still left out here because the left elbow pair was already omitted,
+        # so forearm roll cannot be checked.
         samples["r_lwrist_study"] = [(0.3, 0.4, 1.5)]
         samples["r_mwrist_study"] = [(0.3, 0.4, 1.51)]
+        samples["L_lwrist_study"] = [(0.0, 0.0, 1.0)]
+        samples["L_mwrist_study"] = [(0.0754, 0.0, 1.0)]
         write_trc(source, [0.5], samples, 30.0, [{"target": name} for name in UPPER_MODEL_MARKERS])
         before = source.read_bytes()
         written = write_gated_ik_trc(source, dest, CAMERA_MODEL)
@@ -100,9 +106,16 @@ class ElbowSpacingGateTest(unittest.TestCase):
         self.assertIsNotNone(parsed["frames"][0]["points"]["r_lelbow_study"])
         self.assertIsNone(parsed["frames"][0]["points"]["L_lelbow_study"])
         self.assertIsNone(parsed["frames"][0]["points"]["L_melbow_study"])
-        self.assertEqual(parsed["frames"][0]["points"]["r_lwrist_study"], (0.3, 0.4, 1.5))
+        self.assertIsNone(parsed["frames"][0]["points"]["r_lwrist_study"])
+        self.assertIsNone(parsed["frames"][0]["points"]["r_mwrist_study"])
+        self.assertIsNone(parsed["frames"][0]["points"]["L_lwrist_study"])
+        self.assertIsNone(parsed["frames"][0]["points"]["L_mwrist_study"])
         self.assertIn("were not moved", written["statement"])
+        self.assertIn("wrist estimate", written["statement"].lower())
+        self.assertIn("roll", written["statement"].lower())
         self.assertTrue((folder / "elbow_gate.json").is_file())
+        self.assertTrue((folder / "wrist_gate.json").is_file())
+        self.assertTrue(written["summary"]["wrist_markers_gated"])
         with self.assertRaises(ValueError):
             write_gated_ik_trc(source, source, CAMERA_MODEL)
 
