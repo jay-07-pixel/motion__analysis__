@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import unittest
 
-from src.opensim_upper.visualize import choose_fit_frame
+from src.opensim_upper.visualize import bodies_from_row, choose_fit_frame
 
 
 def _frame(time_sec: float, points: dict) -> dict:
@@ -43,3 +43,18 @@ class FitFrameTest(unittest.TestCase):
         ]
         chosen = choose_fit_frame(frames, model_rows)
         self.assertEqual(frames[chosen]["time_sec"], 2.0)
+
+    def test_body_origins_read_from_a_skeleton_row(self) -> None:
+        bodies = bodies_from_row(
+            {
+                "time": 1.0,
+                "torso_tx": 0.0,
+                "torso_ty": 0.1,
+                "torso_tz": 1.2,
+                "humerus_r_tx": -0.2,
+                "humerus_r_ty": 0.0,
+                "humerus_r_tz": 1.1,
+            }
+        )
+        self.assertEqual(bodies["torso"], (0.0, 0.1, 1.2))
+        self.assertEqual(bodies["humerus_r"], (-0.2, 0.0, 1.1))
